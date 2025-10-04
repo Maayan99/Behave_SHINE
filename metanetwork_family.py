@@ -57,23 +57,25 @@ class MetanetworkTransformer(nn.Module):
         return memory_states.flatten(1, -1)
 
 class Metanetwork(nn.Module):
-    def __init__(self, lora_model:nn.Module, cfg):
+    def __init__(self, metamodel:nn.Module, cfg, output_dim: int):
         super().__init__()
         self.lora_r = cfg.model.lora_r
-        self.output_dim = lora_model.lora_params_numel(self.lora_r)
-        self.lora_model = lora_model
+        self.output_dim = output_dim
+        self.metamodel = metamodel
         if cfg.metanetwork.type == "transformer":
             self.metanetwork = MetanetworkTransformer(cfg)
             self.scale = cfg.metanetwork.transformer_cfg.scale
         else:
             raise ValueError(f"Unknown metanetwork type: {cfg.metanetwork.type}")
 
-    def forward(self, memory_states:torch.Tensor) -> dict:
+    def forward(self, input_ids, attention_mask, labels) -> dict:
         '''
         memory_states: (batch_size, num_layer, num_mem_token, hidden_size)
         '''
+        outputs = self.metamodel(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+        memory_states = outputs.memory_states
         plain_output = self.metanetwork(memory_states)  # (batch_size, output_dim)
-        loradict = self.lora_model.generate_lora_dict(self.lora_r, scale=self.scale, plain_tensor=plain_output)
+        loradict = self.metamodel.generate_lora_dict(self.lora_r, scale=self.scale, plain_tensor=plain_output)
         return loradict
         
     

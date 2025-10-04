@@ -2,8 +2,10 @@ __pycache__
 .vscode
 checkpoints
 tmp.txt
+tmp.py
 outputs
 data/**
 models/**
 tensorboard
 nohup.out
+qwen-finetuned

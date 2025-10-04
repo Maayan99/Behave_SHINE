@@ -10,6 +10,7 @@ import random
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Any
 from functools import partial
+import numpy as np
 
 import torch
 import torch.nn.functional as F
@@ -37,117 +38,21 @@ import logging
 from torch.utils.tensorboard import SummaryWriter
 from metanetwork_family import Metanetwork
 
-# Configure logging once at the entrypoint
-logging.basicConfig(
-    level=logging.INFO,  # You can set to DEBUG for more verbosity
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-logger = logging.getLogger("metalora")
+from utils.mydataset import TextDataset, CausalLMDataCollator, create_mock_dataset
+from utils.myseed import set_seed
+from utils.mylogging import get_logger
+from utils.mysaveload import save_checkpoint, load_checkpoint, save_training_state, load_training_state, get_latest_checkpoint
+from utils.myfreeze import freeze
+from utils.myoptmize import init_optimize
 
-# ---------------------------
-# Mock dataset for demo
-# ---------------------------
-def create_mock_dataset() -> Tuple[List[str], List[str]]:
-    texts = [
-        "1231",
-        "2342",
-        "3453",
-        "4564",
-        "5675",
-        "6786",
-        "7897",
-        "8908",
-        "9019",
-        "0120",
-    ] * 100
-    df = pd.DataFrame({'text': texts})
-    train_texts, val_texts = train_test_split(df['text'], test_size=0.1, random_state=42)
-    return train_texts.tolist(), val_texts.tolist()
+from collections import OrderedDict
 
 
-# ---------------------------
-# Dataset
-# ---------------------------
-class TextDataset(Dataset):
-    def __init__(self, texts: List[str], tokenizer, max_length: int = 512):
-        self.texts = texts
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-
-    def __len__(self):
-        return len(self.texts)
-
-    def __getitem__(self, idx) -> Dict[str, Any]:
-        return {"text": str(self.texts[idx])}
-
-
-# ---------------------------
-# Collator with dynamic padding and label masking
-# ---------------------------
-@dataclass
-class CausalLMDataCollator:
-    tokenizer: Any
-    max_length: int = 512
-
-    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        texts = [ex["text"] for ex in batch]
-        enc = self.tokenizer(
-            texts,
-            truncation=True,
-            padding=True,
-            max_length=self.max_length,
-            return_tensors="pt",
-        )
-        input_ids = enc["input_ids"]
-        attention_mask = enc["attention_mask"]
-        labels = input_ids.clone()
-
-        # Ensure a pad token exists
-        if self.tokenizer.pad_token_id is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        pad_id = self.tokenizer.pad_token_id
-        labels[labels == pad_id] = -100
-
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
-        }
-
-
-# ---------------------------
-# Utilities
-# ---------------------------
-def set_seed(seed: int = 42):
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-
-def save_checkpoint(model, metanetwork, tokenizer, out_dir: str, step: int, extra_state: Dict[str, Any] = None):
-    os.makedirs(out_dir, exist_ok=True)
-    model.save_pretrained(os.path.join(out_dir, "model"))
-    metanetwork.lora_model.save_pretrained(os.path.join(out_dir, "metamodel"))
-    torch.save(metanetwork.metanetwork.state_dict(), os.path.join(out_dir, "metanetwork.pth"))
-    tokenizer.save_pretrained(os.path.join(out_dir, "tokenizer"))
-    if extra_state is not None:
-        with open(os.path.join(out_dir, "trainer_state.json"), "w", encoding="utf-8") as f:
-            json.dump(extra_state, f, ensure_ascii=False, indent=2)
-
-def load_checkpoint(model, metamodel, metanetwork, tokenizer, in_dir: str):
-    model.from_pretrained(os.path.join(in_dir, "model"))
-    metamodel.from_pretrained(os.path.join(in_dir, "metamodel"))
-    metanetwork.lora_model = metamodel
-    metanetwork.metanetwork.load_state_dict(torch.load(os.path.join(in_dir, "metanetwork.pth")))
-    tokenizer.from_pretrained(os.path.join(in_dir, "tokenizer"))
-    return model, metamodel, metanetwork, tokenizer
-
+logger = get_logger("metalora")
 
 @torch.no_grad()
-def evaluate(model, metamodel, metanetwork, dataloader, device, use_amp: bool = True) -> Dict[str, float]:
+def evaluate(model, metanetwork, dataloader, device, use_amp: bool = True) -> Dict[str, float]:
     model.eval()
-    metamodel.eval()
     metanetwork.eval()
     total_loss = 0.0
     n_tokens = 0
@@ -163,11 +68,9 @@ def evaluate(model, metamodel, metanetwork, dataloader, device, use_amp: bool = 
         labels = batch["labels"].to(device, non_blocking=True)
 
         with scaler_ctx():
-            outputs = metamodel(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-            memory_states = outputs.memory_states
-            loradict = metanetwork(memory_states)
+            loradict = metanetwork(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
             new_outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, loradict=loradict)
-            loss = new_outputs.loss 
+            loss = new_outputs.loss
 
         valid_tokens = (labels != -100).sum().item()
         total_loss += loss.item() * valid_tokens
@@ -176,7 +79,6 @@ def evaluate(model, metamodel, metanetwork, dataloader, device, use_amp: bool = 
     avg_loss = total_loss / max(n_tokens, 1)
     ppl = math.exp(avg_loss) if avg_loss < 20 else float("inf")
     model.train()
-    metamodel.train()
     metanetwork.train()
     return {"eval_loss": avg_loss, "perplexity": ppl}
 
@@ -200,9 +102,7 @@ def _import_class(path: str):
     return getattr(mod, cls_name)
 
 
-# ---------------------------
-# Hydra entrypoint
-# ---------------------------
+
 @hydra.main(version_base=None, config_path="configs", config_name="base")
 def main(cfg: DictConfig):
     logger.info("Resolved config:")
@@ -215,9 +115,10 @@ def main(cfg: DictConfig):
     # Load model/tokenizer (supports your local LoRA-wrapped Qwen class)
     logger.info("Loading model & tokenizer...")
     ModelCls = _import_class(cfg.model.model_class_path)
-    MetaModelCls = _import_class(cfg.model.meta_model_class_path) 
+    MetaModelCls = _import_class(cfg.model.meta_model_class_path)
     ConfigCls = _import_class(cfg.model.config_class_path)
     config = ConfigCls.from_pretrained(cfg.model.model_from)
+    config.num_mem_token = -1
     cfg.hidden_size = config.hidden_size
     cfg.num_layers = config.num_hidden_layers
     model = ModelCls.from_pretrained(cfg.model.model_from, config=config)
@@ -231,19 +132,13 @@ def main(cfg: DictConfig):
     else:
         config.num_mem_token = cfg.model.num_mem_token
     metamodel = MetaModelCls.from_pretrained(cfg.model.model_from, config=config)
-    metamodel.train()
-    metamodel.to(device)
     metamodel.reset_mem_tokens()
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.tokenizer_from)
-    metanetwork = Metanetwork(metamodel, cfg)
+    metanetwork = Metanetwork(metamodel, cfg, model.lora_params_numel(cfg.model.lora_r))
     metanetwork.train()
     metanetwork.to(device)
-    for param in model.parameters():
-        param.requires_grad = False  # freeze the base model
-    for param in metamodel.parameters():
-        param.requires_grad = False  # freeze the meta model except mem_tokens
-    metamodel.mem_tokens.requires_grad = True
-    
+    freeze(model, metamodel)
+
     # Data
     logger.info("Preparing data...")
     if cfg.data.source == "mock":
@@ -284,11 +179,11 @@ def main(cfg: DictConfig):
     no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight", "norm.weight", "norm1", "norm2"]
     grouped_params = [
         {
-            "params": [p for n, p in metanetwork.named_parameters() if (not any(nd in n for nd in no_decay) and not n.startswith("lora_model"))],
+            "params": [p for n, p in metanetwork.named_parameters() if (not any(nd in n for nd in no_decay) and not n.startswith("metamodel"))],
             "weight_decay": cfg.optim.weight_decay,
         },
         {
-            "params": [p for n, p in metanetwork.named_parameters() if (any(nd in n for nd in no_decay) and not n.startswith("lora_model"))],
+            "params": [p for n, p in metanetwork.named_parameters() if (any(nd in n for nd in no_decay) and not n.startswith("metamodel"))],
             "weight_decay": 0.0,
         },
         {
@@ -298,49 +193,84 @@ def main(cfg: DictConfig):
     ]
     optimizer = torch.optim.AdamW(grouped_params, lr=cfg.optim.learning_rate)
 
-    total_steps = cfg.optim.num_epochs * math.ceil(len(train_loader) / max(1, cfg.run.gradient_accumulation_steps))
-    lr_scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=cfg.optim.warmup_steps,
-        num_training_steps=total_steps,
-    )
+    optimizer, lr_scheduler, scaler = init_optimize(grouped_params, train_loader, cfg, device)
 
-    # AMP scaler
-    scaler = torch.amp.GradScaler(enabled=(cfg.run.use_fp16 and device.type == "cuda"))
-
-    # Training loop
+    # Training loop scaffolding
     hydra_run_dir = os.getcwd()
     tb_log_dir = os.path.join(hydra_run_dir, "tensorboard")
     writer = SummaryWriter(log_dir=tb_log_dir)
     logger.info(f"TensorBoard logs will be written to: {tb_log_dir}")
     logger.info("Starting training loop...")
-    global_step = 0
-    best_eval_loss = float("inf")
 
-    # Use Hydra's run dir for checkpoints; also mirror to a stable final output_dir if desired  
+    # Checkpoint root
     ckpt_root = os.path.join(hydra_run_dir, "checkpoints")
     os.makedirs(ckpt_root, exist_ok=True)
 
-    def one_train_epoch(epoch):
+    # ---- Resume
+    if cfg.resume_global_step == -1:
+        resume_dir = None
+    elif cfg.resume_global_step == "latest":
+        resume_dir = get_latest_checkpoint(ckpt_root)
+    elif isinstance(cfg.resume_global_step, int) and cfg.resume_global_step > 0:
+        resume_dir = os.path.join(ckpt_root, f"checkpoint-{cfg.resume_global_step}")
+        if not os.path.isdir(resume_dir):
+            raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
+    else:
+        raise ValueError(f"Invalid resume_global_step: {cfg.resume_global_step}")
+
+
+    global_step = 0
+    start_epoch = 1
+    resume_step_in_epoch = 0  # 1-based; 0 means start at beginning
+    best_eval_loss = float("inf")
+
+    if resume_dir:
+        logger.info(f"Resuming from checkpoint: {resume_dir}")
+
+        # 1) reload weights/tokenizer
+        model, metanetwork, tokenizer = load_checkpoint(model, metanetwork, tokenizer, resume_dir)
+        
+        # ensure device placement
+        model.train()
+        model.to(device)
+        metanetwork.train()
+        metanetwork.to(device)
+        # important: keep local reference to metamodel in sync
+        metamodel = metanetwork.metamodel
+
+        # 2) load training state (optimizer, scheduler, scaler, counters, RNG)
+        state = load_training_state(resume_dir, optimizer, lr_scheduler, scaler)
+        if state is not None:
+            global_step = state["global_step"]
+            start_epoch = state["epoch"]
+            resume_step_in_epoch = state["step_in_epoch"]
+            best_eval_loss = state["best_eval_loss"]
+            logger.info(f"Restored: global_step={global_step}, epoch={start_epoch}, step_in_epoch={resume_step_in_epoch}, best_eval_loss={best_eval_loss}")
+        else:
+            logger.warning("No trainer_state.pt found—weights loaded, but optimizer/scheduler/scaler/counters not restored.")
+
+    def one_train_epoch(epoch, resume_step_in_epoch=None):
         nonlocal global_step, best_eval_loss
         epoch_loss = 0.0
         epoch_tokens = 0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{cfg.optim.num_epochs}")
 
         for step, batch in enumerate(pbar, start=1):
+            # If we are resuming within this epoch, skip seen steps
+            if resume_step_in_epoch and step <= resume_step_in_epoch:
+                continue
+
             input_ids = batch["input_ids"].to(device, non_blocking=True)
             attention_mask = batch["attention_mask"].to(device, non_blocking=True)
             labels = batch["labels"].to(device, non_blocking=True)
 
             with torch.amp.autocast(enabled=(cfg.run.use_fp16 and device.type == "cuda"), device_type=str(device)):
-                outputs = metamodel(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                memory_states = outputs.memory_states
-                loradict = metanetwork(memory_states)
+                loradict = metanetwork(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
                 new_outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, loradict=loradict)
-                loss = new_outputs.loss / max(1, cfg.run.gradient_accumulation_steps) #??????????????????????  all into metanetwork?
+                loss = new_outputs.loss / max(1, cfg.run.gradient_accumulation_steps)
 
             writer.add_scalar("train/lr", lr_scheduler.get_last_lr()[0], global_step)
-            
+
             scaler.scale(loss).backward()
 
             valid_tokens = (labels != -100).sum().item()
@@ -368,62 +298,91 @@ def main(cfg: DictConfig):
                     writer.add_scalar("train/ppl", ppl, global_step)
                     pbar.set_postfix({"lr": lr_scheduler.get_last_lr()[0], "loss": f"{avg_loss:.4f}", "ppl": f"{ppl:.2f}"})
 
-                if cfg.eval.eval_steps and global_step % cfg.eval.eval_steps == 0:
-                    eval_metrics = evaluate(model, metamodel, metanetwork, val_loader, device, use_amp=cfg.run.use_fp16)
+                # ---- Periodic checkpoint (model + training state) ----
+                if getattr(cfg.save, "save_steps", 0) and global_step % cfg.save.save_steps == 0:
+                    ckpt_dir = os.path.join(ckpt_root, f"checkpoint-{global_step}")
+                    logger.info(f"Saving checkpoint to {ckpt_dir}")
+                    save_checkpoint(
+                        model, metanetwork, tokenizer, ckpt_dir,
+                        extra_state={"global_step": global_step}
+                    )
+                    save_training_state(
+                        ckpt_dir, optimizer, lr_scheduler, scaler,
+                        global_step=global_step, epoch=epoch,
+                        step_in_epoch=step,
+                        best_eval_loss=best_eval_loss, cfg=cfg
+                    )
+
+                # ---- Eval + best checkpoint (model + training state) ----
+                if getattr(cfg.eval, "eval_steps", 0) and global_step % cfg.eval.eval_steps == 0:
+                    eval_metrics = evaluate(model, metanetwork, val_loader, device, use_amp=cfg.run.use_fp16)
                     writer.add_scalar("eval/loss", eval_metrics["eval_loss"], global_step)
                     writer.add_scalar("eval/ppl", eval_metrics["perplexity"], global_step)
                     logger.info(f"[Eval @ step {global_step}] loss={eval_metrics['eval_loss']:.4f} ppl={eval_metrics['perplexity']:.2f}")
-                                        
-                    if cfg.save.save_best and eval_metrics["eval_loss"] < best_eval_loss:
+
+                    if getattr(cfg.save, "save_best", True) and eval_metrics["eval_loss"] < best_eval_loss:
                         best_eval_loss = eval_metrics["eval_loss"]
                         best_dir = os.path.join(ckpt_root, "best")
                         logger.info(f"New best model! Saving to {best_dir}")
                         save_checkpoint(
-                            model, metanetwork, tokenizer, best_dir, global_step,
+                            model, metanetwork, tokenizer, best_dir,
                             extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss}
                         )
-
-                if cfg.save.save_steps and global_step % cfg.save.save_steps == 0:
-                    ckpt_dir = os.path.join(ckpt_root, f"checkpoint-{global_step}")
-                    logger.info(f"Saving checkpoint to {ckpt_dir}")
-                    save_checkpoint(
-                        model, metanetwork, tokenizer, ckpt_dir, global_step,
-                        extra_state={"global_step": global_step}
-                    )
+                        save_training_state(
+                            best_dir, optimizer, lr_scheduler, scaler,
+                            global_step=global_step, epoch=epoch,
+                            step_in_epoch=step,
+                            best_eval_loss=best_eval_loss, cfg=cfg
+                        )
 
         epoch_avg = (epoch_loss / max(epoch_tokens, 1))
         epoch_ppl = math.exp(epoch_avg) if epoch_avg < 20 else float("inf")
         logger.info(f"Epoch {epoch} done. train_loss={epoch_avg:.4f} train_ppl={epoch_ppl:.2f}")
 
-        eval_metrics = evaluate(model, metamodel, metanetwork, val_loader, device, use_amp=cfg.run.use_fp16)
+        eval_metrics = evaluate(model, metanetwork, val_loader, device, use_amp=cfg.run.use_fp16)
         writer.add_scalar("eval/loss", eval_metrics["eval_loss"], global_step)
         writer.add_scalar("eval/ppl", eval_metrics["perplexity"], global_step)
         logger.info(f"[Epoch {epoch} Eval] loss={eval_metrics['eval_loss']:.4f} ppl={eval_metrics['perplexity']:.2f}")
-        if cfg.save.save_best and eval_metrics["eval_loss"] < best_eval_loss:
+        if getattr(cfg.save, "save_best", True) and eval_metrics["eval_loss"] < best_eval_loss:
             best_eval_loss = eval_metrics["eval_loss"]
             best_dir = os.path.join(ckpt_root, "best")
             logger.info(f"New best model! Saving to {best_dir}")
             save_checkpoint(
-                model, metanetwork, tokenizer, best_dir, global_step,
+                model, metanetwork, tokenizer, best_dir,
                 extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss}
             )
-    
-    eval_metrics = evaluate(model, metamodel, metanetwork, val_loader, device, use_amp=cfg.run.use_fp16)
+            save_training_state(
+                best_dir, optimizer, lr_scheduler, scaler,
+                global_step=global_step, epoch=epoch,
+                step_in_epoch=0,  # end of epoch
+                best_eval_loss=best_eval_loss, cfg=cfg
+            )
+
+    # Initial eval (optional quick check before training)
+    eval_metrics = evaluate(model, metanetwork, val_loader, device, use_amp=cfg.run.use_fp16)
     writer.add_scalar("eval/loss", eval_metrics["eval_loss"], global_step)
     writer.add_scalar("eval/ppl", eval_metrics["perplexity"], global_step)
-    logger.info(f"\n[Eval @ step {global_step}] loss={eval_metrics['eval_loss']:.4f} ppl={eval_metrics['perplexity']:.2f}")
-    for epoch in range(1, cfg.optim.num_epochs + 1):
-        one_train_epoch(epoch)
+    logger.info(f"[Eval @ step {global_step}] loss={eval_metrics['eval_loss']:.4f} ppl={eval_metrics['perplexity']:.2f}")
+
+    # Main training epochs (respect resume point)
+    for epoch in range(start_epoch, cfg.optim.num_epochs + 1):
+        resume_inside = resume_step_in_epoch if epoch == start_epoch else 0
+        one_train_epoch(epoch, resume_step_in_epoch=resume_inside)
 
     # Final save (both to Hydra run dir and an optional stable output_dir)
     logger.info("Saving final model...")
     final_dir = os.path.join(ckpt_root, "final")
-    save_checkpoint(model, metanetwork, tokenizer, final_dir, global_step, extra_state={"global_step": global_step})
+    save_checkpoint(model, metanetwork, tokenizer, final_dir, extra_state={"global_step": global_step})
+    save_training_state(
+        final_dir, optimizer, lr_scheduler, scaler,
+        global_step=global_step, epoch=cfg.optim.num_epochs,
+        step_in_epoch=0, best_eval_loss=best_eval_loss, cfg=cfg
+    )
 
     if cfg.paths.output_dir:
         stable_out = cfg.paths.output_dir
         os.makedirs(stable_out, exist_ok=True)
-        save_checkpoint(model, metanetwork, tokenizer, stable_out, global_step, extra_state={"global_step": global_step})
+        save_checkpoint(model, metanetwork, tokenizer, stable_out, extra_state={"global_step": global_step})
         logger.info(f"Model saved to {stable_out}")
 
     logger.info(f"All artifacts in Hydra run dir: {hydra_run_dir}")
