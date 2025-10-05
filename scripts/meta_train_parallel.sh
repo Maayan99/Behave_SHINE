@@ -11,10 +11,10 @@
 #SBATCH -e metalora.err
 
 
-NUM_GPUS=2
+NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="base"       
-DATASET_NAME=mock       
+DATASET_NAME=transmla 
         
 
 # Find available port
