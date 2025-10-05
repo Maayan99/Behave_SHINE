@@ -331,6 +331,8 @@ def main(cfg: DictConfig):
         nonlocal global_step, best_eval_loss
         epoch_loss = 0.0
         epoch_tokens = 0
+        tmp_loss = 0.0
+        tmp_tokens = 0
 
         if isinstance(train_loader.sampler, DistributedSampler):
             train_loader.sampler.set_epoch(epoch)
@@ -358,7 +360,9 @@ def main(cfg: DictConfig):
             valid_tokens = (labels != -100).sum().item()
             # Track per-rank; we’ll reduce for logging only
             epoch_loss += loss.item() * valid_tokens * max(1, cfg.run.gradient_accumulation_steps)
+            tmp_loss += loss.item() * valid_tokens * max(1, cfg.run.gradient_accumulation_steps)
             epoch_tokens += valid_tokens
+            tmp_tokens += valid_tokens
 
             if step % max(1, cfg.run.gradient_accumulation_steps) == 0:
                 if cfg.optim.grad_clip_norm and cfg.optim.grad_clip_norm > 0:
@@ -376,16 +380,24 @@ def main(cfg: DictConfig):
                 if cfg.logging.logging_steps and global_step % cfg.logging.logging_steps == 0:
                     # everyone computes + participates in the reduction
                     avg_loss_local = (epoch_loss / max(epoch_tokens, 1))
+                    tmp_loss_local = (tmp_loss / max(tmp_tokens, 1))
                     avg_loss_world = distributed_mean(avg_loss_local, device)
+                    tmp_loss_world = distributed_mean(tmp_loss_local, device)
                     if is_main_process():
-                        ppl = math.exp(avg_loss_world) if avg_loss_world < 20 else float("inf")
+                        avg_ppl = math.exp(avg_loss_world) if avg_loss_world < 20 else float("inf")
+                        tmp_ppl = math.exp(tmp_loss_world) if tmp_loss_world < 20 else float("inf")
                         if writer is not None:
                             writer.add_scalar("train/lr", lr_scheduler.get_last_lr()[0], global_step)
-                            writer.add_scalar("train/loss", avg_loss_world, global_step)
-                            writer.add_scalar("train/ppl", ppl, global_step)
+                            writer.add_scalar("train/epoch_avg_loss", avg_loss_world, global_step)
+                            writer.add_scalar("train/epoch_avg_ppl", avg_ppl, global_step)
+                            writer.add_scalar("train/tmp_loss", tmp_loss_world, global_step)
+                            writer.add_scalar("train/tmp_ppl", tmp_ppl, global_step)
                         if isinstance(pbar, tqdm):
                             pbar.set_postfix({"lr": lr_scheduler.get_last_lr()[0],
-                                            "loss": f"{avg_loss_world:.4f}", "ppl": f"{ppl:.2f}"})
+                                            "epoch_avg_loss": f"{avg_loss_world:.4f}", "epoch_avg_ppl": f"{avg_ppl:.2f}",
+                                            "tmp_loss": f"{tmp_loss_world:.4f}", "tmp_ppl": f"{tmp_ppl:.2f}"})
+                    tmp_loss = 0.0
+                    tmp_tokens = 0
 
                 # ---- Periodic checkpoint (rank 0 only) ----
                 if getattr(cfg.save, "save_steps", 0) and global_step % cfg.save.save_steps == 0:
