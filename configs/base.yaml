@@ -4,7 +4,7 @@
 run:
   seed: 42
   use_fp16: false              # set false to disable AMP, or use bf16 if you extend it
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 4
   device: cuda                # auto | cuda | cpu
 
 paths:
@@ -13,7 +13,7 @@ paths:
 
 data:
   max_length: 1024
-  train_batch_size: 8
+  train_batch_size: 4
   eval_batch_size: 8
   num_workers: 4
   # Switch between "mock" and "hf" when you add a real dataset loader
@@ -30,10 +30,10 @@ logging:
   logging_steps: 1
 
 eval:
-  eval_steps: 1000
+  eval_steps: 2000
 
 save:
-  save_steps: 1000
+  save_steps: 2000
   save_best: true
 
 # If you use a custom local module for LoRA-wrapped Qwen, keep it here.
