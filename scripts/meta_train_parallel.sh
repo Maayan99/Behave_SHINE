@@ -11,7 +11,7 @@
 #SBATCH -e metalora.err
 
 
-NUM_GPUS=8
+NUM_GPUS=2
 MASTER_PORT=18900             
 CONFIG_NAME="base"       
 DATASET_NAME=mock       
@@ -29,10 +29,6 @@ export HYDRA_FULL_ERROR=1
 export OMP_NUM_THREADS=4
 export NCCL_DEBUG=WARN
 export TORCH_DISTRIBUTED_DEBUG=INFO
-
-mkdir -p "save/${NAME}/${RUN_TYPE}"
-mkdir -p "save/${NAME}/${RUN_TYPE}/metanetwork"
-# save/Maybe/0/meta_train/metanetwork 
 
 torchrun \
     --nproc_per_node=$NUM_GPUS \

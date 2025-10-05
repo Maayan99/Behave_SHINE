@@ -373,15 +373,19 @@ def main(cfg: DictConfig):
                 global_step += 1
 
                 # Periodic logging (only on rank 0, with distributed averages)
-                if cfg.logging.logging_steps and global_step % cfg.logging.logging_steps == 0 and is_main_process():
-                    # average tokens/loss across ranks for smoother logs
+                if cfg.logging.logging_steps and global_step % cfg.logging.logging_steps == 0:
+                    # everyone computes + participates in the reduction
                     avg_loss_local = (epoch_loss / max(epoch_tokens, 1))
                     avg_loss_world = distributed_mean(avg_loss_local, device)
-                    ppl = math.exp(avg_loss_world) if avg_loss_world < 20 else float("inf")
-                    writer.add_scalar("train/loss", avg_loss_world, global_step)
-                    writer.add_scalar("train/ppl", ppl, global_step)
-                    if isinstance(pbar, tqdm):
-                        pbar.set_postfix({"lr": lr_scheduler.get_last_lr()[0], "loss": f"{avg_loss_world:.4f}", "ppl": f"{ppl:.2f}"})
+                    if is_main_process():
+                        ppl = math.exp(avg_loss_world) if avg_loss_world < 20 else float("inf")
+                        if writer is not None:
+                            writer.add_scalar("train/lr", lr_scheduler.get_last_lr()[0], global_step)
+                            writer.add_scalar("train/loss", avg_loss_world, global_step)
+                            writer.add_scalar("train/ppl", ppl, global_step)
+                        if isinstance(pbar, tqdm):
+                            pbar.set_postfix({"lr": lr_scheduler.get_last_lr()[0],
+                                            "loss": f"{avg_loss_world:.4f}", "ppl": f"{ppl:.2f}"})
 
                 # ---- Periodic checkpoint (rank 0 only) ----
                 if getattr(cfg.save, "save_steps", 0) and global_step % cfg.save.save_steps == 0:
