@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple, Any
 
 import torch
+from torch.utils.data import Sampler
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 import pandas as pd

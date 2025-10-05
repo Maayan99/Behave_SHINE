@@ -1,4 +1,5 @@
-resume_global_step: 20  # -1: don't resume,   int: resume from global steps,  latest: resume from latest
+# Not ready yet
+# resume_global_step: 20  # -1: don't resume,   int: resume from global steps,  latest: resume from latest
 
 run:
   seed: 42
@@ -14,6 +15,7 @@ data:
   max_length: 512
   train_batch_size: 2
   eval_batch_size: 8
+  num_workers: 4
   # Switch between "mock" and "hf" when you add a real dataset loader
   source: "mock"
 
@@ -31,7 +33,7 @@ eval:
   eval_steps: 20
 
 save:
-  save_steps: 20
+  save_steps: 40
   save_best: true
 
 # If you use a custom local module for LoRA-wrapped Qwen, keep it here.
@@ -61,6 +63,15 @@ metanetwork:
     num_layers: 4 # Fixed
     scale: 0.001
 
+hydra:
+  job:
+    chdir: false
+  run:
+    # everyone uses the SAME dir
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  output_subdir: null  # avoid multiple `.hydra` subdirs trying to coexist
+
 hidden_size: -1
 num_layers: -1
 num_mem_token: 4
+

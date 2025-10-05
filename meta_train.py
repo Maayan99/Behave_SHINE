@@ -162,9 +162,9 @@ def main(cfg: DictConfig):
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.data.train_batch_size,
-        shuffle=True,
+        shuffle=False,
         collate_fn=collator,
-        pin_memory=pin,
+        pin_memory=pin,    
     )
     val_loader = DataLoader(
         val_ds,
@@ -205,51 +205,164 @@ def main(cfg: DictConfig):
     # Checkpoint root
     ckpt_root = os.path.join(hydra_run_dir, "checkpoints")
     os.makedirs(ckpt_root, exist_ok=True)
-
-    # ---- Resume
-    if cfg.resume_global_step == -1:
-        resume_dir = None
-    elif cfg.resume_global_step == "latest":
-        resume_dir = get_latest_checkpoint(ckpt_root)
-    elif isinstance(cfg.resume_global_step, int) and cfg.resume_global_step > 0:
-        resume_dir = os.path.join(ckpt_root, f"checkpoint-{cfg.resume_global_step}")
-        if not os.path.isdir(resume_dir):
-            raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
-    else:
-        raise ValueError(f"Invalid resume_global_step: {cfg.resume_global_step}")
-
-
+    
     global_step = 0
-    start_epoch = 1
-    resume_step_in_epoch = 0  # 1-based; 0 means start at beginning
     best_eval_loss = float("inf")
 
-    if resume_dir:
-        logger.info(f"Resuming from checkpoint: {resume_dir}")
+    # # ---- Resume
+    # if cfg.resume_global_step == -1:
+    #     resume_dir = None
+    # elif cfg.resume_global_step == "latest":
+    #     resume_dir = get_latest_checkpoint(ckpt_root)
+    # elif isinstance(cfg.resume_global_step, int) and cfg.resume_global_step > 0:
+    #     resume_dir = os.path.join(ckpt_root, f"checkpoint-{cfg.resume_global_step}")
+    #     if not os.path.isdir(resume_dir):
+    #         raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
+    # else:
+    #     raise ValueError(f"Invalid resume_global_step: {cfg.resume_global_step}")
 
-        # 1) reload weights/tokenizer
-        model, metanetwork, tokenizer = load_checkpoint(model, metanetwork, tokenizer, resume_dir)
+
+    # global_step = 0
+    # start_epoch = 1
+    # resume_step_in_epoch = 0  # 1-based; 0 means start at beginning
+    # best_eval_loss = float("inf")
+
+    # if resume_dir:
+    #     logger.info(f"Resuming from checkpoint: {resume_dir}")
+
+    #     # 1) reload weights/tokenizer
+    #     model, metanetwork, tokenizer = load_checkpoint(model, metanetwork, tokenizer, resume_dir)
         
-        # ensure device placement
-        model.train()
-        model.to(device)
-        metanetwork.train()
-        metanetwork.to(device)
-        # important: keep local reference to metamodel in sync
-        metamodel = metanetwork.metamodel
+    #     # ensure device placement
+    #     model.train()
+    #     model.to(device)
+    #     metanetwork.train()
+    #     metanetwork.to(device)
+    #     # important: keep local reference to metamodel in sync
+    #     metamodel = metanetwork.metamodel
 
-        # 2) load training state (optimizer, scheduler, scaler, counters, RNG)
-        state = load_training_state(resume_dir, optimizer, lr_scheduler, scaler)
-        if state is not None:
-            global_step = state["global_step"]
-            start_epoch = state["epoch"]
-            resume_step_in_epoch = state["step_in_epoch"]
-            best_eval_loss = state["best_eval_loss"]
-            logger.info(f"Restored: global_step={global_step}, epoch={start_epoch}, step_in_epoch={resume_step_in_epoch}, best_eval_loss={best_eval_loss}")
-        else:
-            logger.warning("No trainer_state.pt found—weights loaded, but optimizer/scheduler/scaler/counters not restored.")
+    #     # 2) load training state (optimizer, scheduler, scaler, counters, RNG)
+    #     state = load_training_state(resume_dir, optimizer, lr_scheduler, scaler)
+    #     train_loader = state["dataloader"] if state["dataloader"] is not None else train_loader
+    #     if state is not None:
+    #         global_step = state["global_step"]
+    #         start_epoch = state["epoch"]
+    #         resume_step_in_epoch = state["step_in_epoch"]
+    #         best_eval_loss = state["best_eval_loss"]
+    #         logger.info(f"Restored: global_step={global_step}, epoch={start_epoch}, step_in_epoch={resume_step_in_epoch}, best_eval_loss={best_eval_loss}")
+    #     else:
+    #         logger.warning("No trainer_state.pt found—weights loaded, but optimizer/scheduler/scaler/counters not restored.")
 
-    def one_train_epoch(epoch, resume_step_in_epoch=None):
+    # def one_train_epoch(epoch, resume_step_in_epoch=None):
+    #     nonlocal global_step, best_eval_loss
+    #     epoch_loss = 0.0
+    #     epoch_tokens = 0
+    #     pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{cfg.optim.num_epochs}")
+
+    #     for step, batch in enumerate(pbar, start=1):
+    #         # If we are resuming within this epoch, skip seen steps
+    #         if resume_step_in_epoch and step <= resume_step_in_epoch:
+    #             continue
+
+    #         input_ids = batch["input_ids"].to(device, non_blocking=True)
+    #         attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+    #         labels = batch["labels"].to(device, non_blocking=True)
+
+    #         with torch.amp.autocast(enabled=(cfg.run.use_fp16 and device.type == "cuda"), device_type=str(device)):
+    #             loradict = metanetwork(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+    #             new_outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, loradict=loradict)
+    #             loss = new_outputs.loss / max(1, cfg.run.gradient_accumulation_steps)
+
+    #         writer.add_scalar("train/lr", lr_scheduler.get_last_lr()[0], global_step)
+
+    #         scaler.scale(loss).backward()
+
+    #         valid_tokens = (labels != -100).sum().item()
+    #         epoch_loss += loss.item() * valid_tokens * max(1, cfg.run.gradient_accumulation_steps)
+    #         epoch_tokens += valid_tokens
+
+    #         if step % max(1, cfg.run.gradient_accumulation_steps) == 0:
+    #             if cfg.optim.grad_clip_norm and cfg.optim.grad_clip_norm > 0:
+    #                 scaler.unscale_(optimizer)
+    #                 for group in optimizer.param_groups:
+    #                     torch.nn.utils.clip_grad_norm_(
+    #                         group["params"], cfg.optim.grad_clip_norm
+    #                     )
+
+    #             scaler.step(optimizer)
+    #             scaler.update()
+    #             optimizer.zero_grad(set_to_none=True)
+    #             lr_scheduler.step()
+    #             global_step += 1
+
+    #             if cfg.logging.logging_steps and global_step % cfg.logging.logging_steps == 0:
+    #                 avg_loss = (epoch_loss / max(epoch_tokens, 1))
+    #                 ppl = math.exp(avg_loss) if avg_loss < 20 else float("inf")
+    #                 writer.add_scalar("train/loss", avg_loss, global_step)
+    #                 writer.add_scalar("train/ppl", ppl, global_step)
+    #                 pbar.set_postfix({"lr": lr_scheduler.get_last_lr()[0], "loss": f"{avg_loss:.4f}", "ppl": f"{ppl:.2f}"})
+
+    #             # ---- Periodic checkpoint (model + training state) ----
+    #             if getattr(cfg.save, "save_steps", 0) and global_step % cfg.save.save_steps == 0:
+    #                 ckpt_dir = os.path.join(ckpt_root, f"checkpoint-{global_step}")
+    #                 logger.info(f"Saving checkpoint to {ckpt_dir}")
+    #                 save_checkpoint(
+    #                     model, metanetwork, tokenizer, ckpt_dir,
+    #                     extra_state={"global_step": global_step}
+    #                 )
+    #                 save_training_state(
+    #                     ckpt_dir, optimizer, lr_scheduler, scaler,
+    #                     global_step=global_step, epoch=epoch,
+    #                     step_in_epoch=step,
+    #                     best_eval_loss=best_eval_loss, cfg=cfg, dataloader=train_loader
+    #                 )
+
+    #             # ---- Eval + best checkpoint (model + training state) ----
+    #             if getattr(cfg.eval, "eval_steps", 0) and global_step % cfg.eval.eval_steps == 0:
+    #                 eval_metrics = evaluate(model, metanetwork, val_loader, device, use_amp=cfg.run.use_fp16)
+    #                 writer.add_scalar("eval/loss", eval_metrics["eval_loss"], global_step)
+    #                 writer.add_scalar("eval/ppl", eval_metrics["perplexity"], global_step)
+    #                 logger.info(f"[Eval @ step {global_step}] loss={eval_metrics['eval_loss']:.4f} ppl={eval_metrics['perplexity']:.2f}")
+
+    #                 if getattr(cfg.save, "save_best", True) and eval_metrics["eval_loss"] < best_eval_loss:
+    #                     best_eval_loss = eval_metrics["eval_loss"]
+    #                     best_dir = os.path.join(ckpt_root, "best")
+    #                     logger.info(f"New best model! Saving to {best_dir}")
+    #                     save_checkpoint(
+    #                         model, metanetwork, tokenizer, best_dir,
+    #                         extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss}
+    #                     )
+    #                     save_training_state(
+    #                         best_dir, optimizer, lr_scheduler, scaler,
+    #                         global_step=global_step, epoch=epoch,
+    #                         step_in_epoch=step,
+    #                         best_eval_loss=best_eval_loss, cfg=cfg, dataloader=train_loader
+    #                     )
+
+    #     epoch_avg = (epoch_loss / max(epoch_tokens, 1))
+    #     epoch_ppl = math.exp(epoch_avg) if epoch_avg < 20 else float("inf")
+    #     logger.info(f"Epoch {epoch} done. train_loss={epoch_avg:.4f} train_ppl={epoch_ppl:.2f}")
+
+    #     eval_metrics = evaluate(model, metanetwork, val_loader, device, use_amp=cfg.run.use_fp16)
+    #     writer.add_scalar("eval/loss", eval_metrics["eval_loss"], global_step)
+    #     writer.add_scalar("eval/ppl", eval_metrics["perplexity"], global_step)
+    #     logger.info(f"[Epoch {epoch} Eval] loss={eval_metrics['eval_loss']:.4f} ppl={eval_metrics['perplexity']:.2f}")
+    #     if getattr(cfg.save, "save_best", True) and eval_metrics["eval_loss"] < best_eval_loss:
+    #         best_eval_loss = eval_metrics["eval_loss"]
+    #         best_dir = os.path.join(ckpt_root, "best")
+    #         logger.info(f"New best model! Saving to {best_dir}")
+    #         save_checkpoint(
+    #             model, metanetwork, tokenizer, best_dir,
+    #             extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss}
+    #         )
+    #         save_training_state(
+    #             best_dir, optimizer, lr_scheduler, scaler,
+    #             global_step=global_step, epoch=epoch,
+    #             step_in_epoch=0,  # end of epoch
+    #             best_eval_loss=best_eval_loss, cfg=cfg, dataloader=train_loader
+    #         )
+
+    def one_train_epoch(epoch):
         nonlocal global_step, best_eval_loss
         epoch_loss = 0.0
         epoch_tokens = 0
@@ -257,9 +370,6 @@ def main(cfg: DictConfig):
 
         for step, batch in enumerate(pbar, start=1):
             # If we are resuming within this epoch, skip seen steps
-            if resume_step_in_epoch and step <= resume_step_in_epoch:
-                continue
-
             input_ids = batch["input_ids"].to(device, non_blocking=True)
             attention_mask = batch["attention_mask"].to(device, non_blocking=True)
             labels = batch["labels"].to(device, non_blocking=True)
@@ -306,12 +416,6 @@ def main(cfg: DictConfig):
                         model, metanetwork, tokenizer, ckpt_dir,
                         extra_state={"global_step": global_step}
                     )
-                    save_training_state(
-                        ckpt_dir, optimizer, lr_scheduler, scaler,
-                        global_step=global_step, epoch=epoch,
-                        step_in_epoch=step,
-                        best_eval_loss=best_eval_loss, cfg=cfg
-                    )
 
                 # ---- Eval + best checkpoint (model + training state) ----
                 if getattr(cfg.eval, "eval_steps", 0) and global_step % cfg.eval.eval_steps == 0:
@@ -327,12 +431,6 @@ def main(cfg: DictConfig):
                         save_checkpoint(
                             model, metanetwork, tokenizer, best_dir,
                             extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss}
-                        )
-                        save_training_state(
-                            best_dir, optimizer, lr_scheduler, scaler,
-                            global_step=global_step, epoch=epoch,
-                            step_in_epoch=step,
-                            best_eval_loss=best_eval_loss, cfg=cfg
                         )
 
         epoch_avg = (epoch_loss / max(epoch_tokens, 1))
@@ -351,12 +449,6 @@ def main(cfg: DictConfig):
                 model, metanetwork, tokenizer, best_dir,
                 extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss}
             )
-            save_training_state(
-                best_dir, optimizer, lr_scheduler, scaler,
-                global_step=global_step, epoch=epoch,
-                step_in_epoch=0,  # end of epoch
-                best_eval_loss=best_eval_loss, cfg=cfg
-            )
 
     # Initial eval (optional quick check before training)
     eval_metrics = evaluate(model, metanetwork, val_loader, device, use_amp=cfg.run.use_fp16)
@@ -365,19 +457,13 @@ def main(cfg: DictConfig):
     logger.info(f"[Eval @ step {global_step}] loss={eval_metrics['eval_loss']:.4f} ppl={eval_metrics['perplexity']:.2f}")
 
     # Main training epochs (respect resume point)
-    for epoch in range(start_epoch, cfg.optim.num_epochs + 1):
-        resume_inside = resume_step_in_epoch if epoch == start_epoch else 0
-        one_train_epoch(epoch, resume_step_in_epoch=resume_inside)
+    for epoch in range(1, cfg.optim.num_epochs + 1):
+        one_train_epoch(epoch)
 
     # Final save (both to Hydra run dir and an optional stable output_dir)
     logger.info("Saving final model...")
     final_dir = os.path.join(ckpt_root, "final")
     save_checkpoint(model, metanetwork, tokenizer, final_dir, extra_state={"global_step": global_step})
-    save_training_state(
-        final_dir, optimizer, lr_scheduler, scaler,
-        global_step=global_step, epoch=cfg.optim.num_epochs,
-        step_in_epoch=0, best_eval_loss=best_eval_loss, cfg=cfg
-    )
 
     if cfg.paths.output_dir:
         stable_out = cfg.paths.output_dir

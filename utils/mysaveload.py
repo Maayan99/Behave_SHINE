@@ -7,6 +7,7 @@ import random
 from omegaconf import DictConfig, OmegaConf
 from utils.mylogging import get_logger
 from utils.myfreeze import freeze
+from torch.utils.data import DataLoader
 
 logger = get_logger("save & load")
 
@@ -58,7 +59,8 @@ def save_training_state(
     epoch: int,
     step_in_epoch: int,
     best_eval_loss: float,
-    cfg: DictConfig
+    cfg: DictConfig,
+    dataloader: DataLoader = None,  # <-- NEW
 ):
     os.makedirs(os.path.join(out_dir, "trainer_state"), exist_ok=True)
     payload = {
@@ -66,11 +68,13 @@ def save_training_state(
         "lr_scheduler": lr_scheduler.state_dict() if hasattr(lr_scheduler, "state_dict") else None,
         "scaler": scaler.state_dict() if scaler is not None else None,
         "global_step": global_step,
-        "epoch": epoch,                  # 1-based epoch index
-        "step_in_epoch": step_in_epoch,  # 1-based step index within the epoch
+        "epoch": epoch,
+        "step_in_epoch": step_in_epoch,
         "best_eval_loss": best_eval_loss,
         "rng_state": _rng_state_dict(),
         "cfg": OmegaConf.to_container(cfg, resolve=True),
+        # NEW: dataloader generator state (if provided)
+        "dataloader": dataloader
     }
     torch.save(payload, os.path.join(out_dir, "trainer_state", "trainer_state.pt"))
 
@@ -91,12 +95,19 @@ def load_training_state(
     if payload.get("scaler") is not None and scaler is not None:
         scaler.load_state_dict(payload["scaler"])
     _set_rng_state(payload.get("rng_state"))
+    if payload.get("dataloader") is not None:
+        dataloader = payload.get("dataloader")  
+    else:
+        dataloader = None
+
     return {
         "global_step": payload.get("global_step", 0),
         "epoch": payload.get("epoch", 1),
         "step_in_epoch": payload.get("step_in_epoch", 0),
         "best_eval_loss": payload.get("best_eval_loss", float("inf")),
+        "dataloader": dataloader  # <-- NEW
     }
+
 
 def get_latest_checkpoint(root_dir: str) -> str:
     if not os.path.isdir(root_dir):
