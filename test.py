@@ -136,9 +136,6 @@ def test(cfg, model, metanetwork_ddp_or_module, tokenizer, testloader, save_path
                 answer_text = full_text
 
             results.append({
-                "rank": int(get_rank()),
-                "batch_index": int(batch_idx),
-                "sample_index": i,
                 "prompt": prompt_text,
                 "prediction": answer_text,
                 "ground_truth": tokenizer.decode(ground_truths[i], skip_special_tokens=True),
