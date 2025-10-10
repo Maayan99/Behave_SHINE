@@ -179,7 +179,7 @@ def main(cfg: DictConfig):
         # Load model & tokenizer
         if is_main_process():
             logger.info(f"Resume mode, loading from {resume_dir}...")
-        metanetwork, tokenizer = load_checkpoint(metanetwork, tokenizer, resume_dir, device)
+        metanetwork = load_checkpoint(metanetwork, resume_dir, device)
         resume_state = load_training_state(resume_dir)
 
     # ====== Wrap ONLY the trainable module in DDP when applicable ======
@@ -380,7 +380,6 @@ def main(cfg: DictConfig):
                         # Save unwrapped metanetwork (state is in ddp_metanet.module when DDP)
                         save_checkpoint(
                             ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
-                            tokenizer,
                             ckpt_dir,
                             extra_state={"global_step": global_step},
                         )
@@ -411,7 +410,6 @@ def main(cfg: DictConfig):
                             logger.info(f"New best model! Saving to {best_dir}")
                             save_checkpoint(
                                 ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
-                                tokenizer,
                                 best_dir,
                                 extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss},
                             )
@@ -446,7 +444,6 @@ def main(cfg: DictConfig):
                 logger.info(f"New best model! Saving to {best_dir}")
                 save_checkpoint(
                     ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
-                    tokenizer,
                     best_dir,
                     extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss},
                 )
@@ -481,7 +478,6 @@ def main(cfg: DictConfig):
         final_dir = os.path.join(ckpt_root, "final")
         save_checkpoint(
             ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
-            tokenizer,
             final_dir,
             extra_state={"global_step": global_step},
         )
@@ -491,7 +487,6 @@ def main(cfg: DictConfig):
             os.makedirs(stable_out, exist_ok=True)
             save_checkpoint(
                 ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
-                tokenizer,
                 stable_out,
                 extra_state={"global_step": global_step},
             )

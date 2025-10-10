@@ -14,7 +14,6 @@
 NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="base"       
-DATASET_NAME=transmla 
         
 
 # Find available port
@@ -38,5 +37,4 @@ torchrun \
     --master_port=$MASTER_PORT \
     meta_train_parallel.py \
     +experiment=$CONFIG_NAME \
-    data.source=$DATASET_NAME \
     > tmp.txt 2>&1

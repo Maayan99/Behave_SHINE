@@ -12,23 +12,25 @@ import time
 
 logger = get_logger("save & load")
 
-def save_checkpoint(metanetwork, tokenizer, out_dir: str, extra_state: Dict[str, Any] = None):
+def save_checkpoint(metanetwork, out_dir: str, extra_state: Dict[str, Any] = None):
     os.makedirs(out_dir, exist_ok=True)
-    metanetwork.metamodel.save_pretrained(os.path.join(out_dir, "metamodel"))
+    if metanetwork.metamodel.model.use_mem_token:
+        torch.save(metanetwork.metamodel.model.mem_tokens, os.path.join(out_dir, "mem_tokens.pt"))
     torch.save(metanetwork.metanetwork.state_dict(), os.path.join(out_dir, "metanetwork.pth"))
-    tokenizer.save_pretrained(os.path.join(out_dir, "tokenizer"))
     if extra_state is not None:
         with open(os.path.join(out_dir, "trainer_state.json"), "w", encoding="utf-8") as f:
             json.dump(extra_state, f, ensure_ascii=False, indent=2)
 
-def load_checkpoint(metanetwork, tokenizer, in_dir, device: str):
+def load_checkpoint(metanetwork, in_dir, device: str):
     metanetwork.to("cpu")
-    metanetwork.metamodel = metanetwork.metamodel.__class__.from_pretrained(os.path.join(in_dir, "metamodel"))
+    if metanetwork.metamodel.model.use_mem_token:
+        saved_mem_tokens = torch.load(os.path.join(in_dir, "mem_tokens.pt"), map_location="cpu", weights_only=False)
+        assert saved_mem_tokens.shape == metanetwork.metamodel.model.mem_tokens.shape, f"Shape mismatch for mem_tokens: saved {saved_mem_tokens.shape}, model {metanetwork.metamodel.model.mem_tokens.shape}"
+        metanetwork.metamodel.model.mem_tokens = saved_mem_tokens
     metanetwork.metanetwork.load_state_dict(torch.load(os.path.join(in_dir, "metanetwork.pth"), weights_only=False, map_location="cpu"))
     metanetwork.to(device)
-    tokenizer = tokenizer.__class__.from_pretrained(os.path.join(in_dir, "tokenizer"))
     freeze(metanetwork.metamodel)
-    return metanetwork, tokenizer
+    return metanetwork
 
 def _rng_state_dict():
     state = {
@@ -58,7 +60,7 @@ def save_training_state(
     step_in_epoch: int,
     best_eval_loss: float,
 ):
-    os.makedirs(os.path.join(out_dir, "trainer_state"), exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
     payload = {
         "global_step": global_step,
         "epoch": epoch,
@@ -66,12 +68,12 @@ def save_training_state(
         "best_eval_loss": best_eval_loss,
         "rng_state": _rng_state_dict(),
     }
-    torch.save(payload, os.path.join(out_dir, "trainer_state", "trainer_state.pt"))
+    torch.save(payload, os.path.join(out_dir, "trainer_state.pt"))
 
 def load_training_state(
     in_dir: str,
 ):
-    path = os.path.join(in_dir, "trainer_state", "trainer_state.pt")
+    path = os.path.join(in_dir, "trainer_state.pt")
     if not os.path.isfile(path):
         return None
     payload = torch.load(path, map_location="cpu", weights_only=False)

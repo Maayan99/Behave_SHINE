@@ -364,6 +364,9 @@ class LoraQwen3Model(Qwen3PreTrainedModel):
         loradict (`dict` of `dict` of `torch.FloatTensor`, *optional*):
             A dictionary that maps each layer to its corresponding LoRA parameters. Each layer's LoRA parameters are
             stored in a nested dictionary.
+        ignore_mem_token (`bool`, *optional*, defaults to `False`):
+            Whether to ignore the memory tokens during the forward pass. If set to `True`, the memory tokens will not be
+            used, and the model will behave like a standard transformer without memory tokens. 
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -504,6 +507,9 @@ class LoraQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         loradict (`dict` of `dict` of `torch.FloatTensor`, *optional*):
             A dictionary that maps each layer to its corresponding LoRA parameters. Each layer's LoRA parameters are
             stored in a nested dictionary.
+        ignore_mem_token (`bool`, *optional*, defaults to `False`):
+            Whether to ignore the memory tokens during the forward pass. If set to `True`, the memory tokens will not be
+            used, and the model will behave like a standard transformer without memory tokens. 
 
         Example:
         ```python

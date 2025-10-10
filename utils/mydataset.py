@@ -27,7 +27,7 @@ def create_mock_dataset() -> Tuple[List[str], List[str]]:
         "8908",
         "9019",
         "0120",
-    ] * 5
+    ] * 50
     df = pd.DataFrame({'text': texts})
     train_texts, val_texts = train_test_split(df['text'], test_size=0.1, random_state=42)
     return train_texts.tolist(), val_texts.tolist()
