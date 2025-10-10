@@ -181,6 +181,8 @@ def main(cfg: DictConfig):
             logger.info(f"Resume mode, loading from {resume_dir}...")
         metanetwork = load_checkpoint(metanetwork, resume_dir, device)
         resume_state = load_training_state(resume_dir)
+        
+    metanetwork.metamodel.config.use_cache = False
 
     # ====== Wrap ONLY the trainable module in DDP when applicable ======
     if should_use_ddp():
@@ -369,6 +371,11 @@ def main(cfg: DictConfig):
                                             "tmp_loss": f"{tmp_loss_world:.4f}", "tmp_ppl": f"{tmp_ppl:.2f}"})
                     tmp_loss = 0.0
                     tmp_tokens = 0
+                
+                # Free memory
+                del input_ids, attention_mask, labels, outputs, loss
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
 
                 # ---- Periodic checkpoint (rank 0 only) ----
                 if getattr(cfg.save, "save_steps", 0) and global_step % cfg.save.save_steps == 0:
@@ -422,7 +429,13 @@ def main(cfg: DictConfig):
                             )
                     if ddp_is_active():
                         dist.barrier()
-
+        
+        try:
+            del input_ids, attention_mask, labels, outputs, loss
+        except:
+            pass
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
         # Epoch-end eval/log (averaged)
         avg_epoch_loss_local = (epoch_loss / max(epoch_tokens, 1))
         avg_epoch_loss_world = distributed_mean(avg_epoch_loss_local, device)
