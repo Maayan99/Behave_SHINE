@@ -58,7 +58,7 @@ metanetwork:
       batch_first: True
       norm_first: False
       bias: True
-    num_layers: 8 # Must be even
+    num_layers: 4 # Must be even
     scale: 0.001
 
 test:

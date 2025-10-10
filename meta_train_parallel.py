@@ -470,17 +470,17 @@ def main(cfg: DictConfig):
         if ddp_is_active():
             dist.barrier()
     
-    # Initial eval
-    if resume_dir is None:
-        init_eval_without_metanetwork = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16, use_metanet=False)
-        if is_main_process():
-            logger.info(f"[without lora] loss={init_eval_without_metanetwork['eval_loss']:.4f} ppl={init_eval_without_metanetwork['perplexity']:.2f}")
-    init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16)
-    if writer is not None:
-        writer.add_scalar("eval/loss", init_eval["eval_loss"], global_step)
-        writer.add_scalar("eval/ppl", init_eval["perplexity"], global_step)
-    if is_main_process():
-        logger.info(f"[Eval @ step {global_step}] loss={init_eval['eval_loss']:.4f} ppl={init_eval['perplexity']:.2f}")
+    # # Initial eval
+    # if resume_dir is None:
+    #     init_eval_without_metanetwork = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16, use_metanet=False)
+    #     if is_main_process():
+    #         logger.info(f"[without lora] loss={init_eval_without_metanetwork['eval_loss']:.4f} ppl={init_eval_without_metanetwork['perplexity']:.2f}")
+    # init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16)
+    # if writer is not None:
+    #     writer.add_scalar("eval/loss", init_eval["eval_loss"], global_step)
+    #     writer.add_scalar("eval/ppl", init_eval["perplexity"], global_step)
+    # if is_main_process():
+    #     logger.info(f"[Eval @ step {global_step}] loss={init_eval['eval_loss']:.4f} ppl={init_eval['perplexity']:.2f}")
 
     # Main training epochs
     for epoch in range(1, cfg.optim.num_epochs + 1):
