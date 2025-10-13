@@ -1,4 +1,4 @@
-resume_global_step: latest  # -1: don't resume,   int: resume from global steps,  latest: resume from latest
+resume_global_step: -1  # -1: don't resume,   int: resume from global steps,  latest: resume from latest
 test_global_step: latest # int: test at global steps,  latest: test at latest
 
 run:
@@ -17,12 +17,12 @@ data:
   eval_batch_size: 2
   num_workers: 4
   # Switch between "mock" and "hf" when you add a real dataset loader
-  source: "transmla"
+  source: squad
 
 optim:
-  learning_rate: 0.0001
+  learning_rate: 0.00005
   weight_decay: 0.01
-  num_epochs: 1
+  num_epochs: 2
   warmup_steps: 100
   grad_clip_norm: 0.0
 
@@ -30,7 +30,7 @@ logging:
   logging_steps: 1
 
 eval:
-  eval_steps: 500
+  eval_steps: 50
 
 save:
   save_steps: 50
@@ -63,7 +63,7 @@ metanetwork:
     scale: 0.001
 
 test:
-  source: easy
+  source: squad
   max_new_tokens: 1024
   save_path: test
   batch_size: 4
@@ -90,7 +90,7 @@ num_mem_token: 4
 
 
 # resume_global_step: -1  # -1: don't resume,   int: resume from global steps,  latest: resume from latest
-# test_global_step: final # int: test at global steps,  latest: test at latest
+# test_global_step: latest # int: test at global steps,  latest: test at latest
 
 # run:
 #   seed: 42
@@ -108,10 +108,10 @@ num_mem_token: 4
 #   eval_batch_size: 4
 #   num_workers: 4
 #   # Switch between "mock" and "hf" when you add a real dataset loader
-#   source: "mock"
+#   source: squad
 
 # optim:
-#   learning_rate: 0.0001
+#   learning_rate: 0.00005
 #   weight_decay: 0.01
 #   num_epochs: 3
 #   warmup_steps: 100
@@ -121,10 +121,10 @@ num_mem_token: 4
 #   logging_steps: 1
 
 # eval:
-#   eval_steps: 10
+#   eval_steps: 300
 
 # save:
-#   save_steps: 10
+#   save_steps: 300
 #   save_best: true
 
 # # If you use a custom local module for LoRA-wrapped Qwen, keep it here.
@@ -154,7 +154,7 @@ num_mem_token: 4
 #     scale: 0.001
 
 # test:
-#   source: easy
+#   source: squad
 #   max_new_tokens: 1024
 #   save_path: test
 #   batch_size: 4

@@ -42,7 +42,7 @@ import logging
 from torch.utils.tensorboard import SummaryWriter
 from metanetwork_family import Metanetwork
 
-from utils.mydataset import TextDataset, CausalLMDataCollator, create_mock_dataset, LoogleDataset, LoogleCollator
+from utils.mydataset import SquadDataset, SquadCollator, TextDataset, CausalLMDataCollator, create_mock_dataset, LoogleDataset, LoogleCollator
 from utils.myseed import set_seed
 from utils.mylogging import get_logger
 from utils.mysaveload import (
@@ -69,8 +69,49 @@ from utils.myddp import (
 from utils.myinit import _resolve_device, _import_class
 from collections import OrderedDict
 import time
+import re
 
 logger = get_logger("test")
+
+
+def extract_think_and_answer(text: str) -> Tuple[str, str]:
+    """
+    Splits model output into (think_part, answer_part).
+    Returns empty strings if either is missing.
+    """
+    # Make search case-insensitive
+    lower = text.lower()
+    start_tag = "<think>"
+    end_tag = "</think>"
+
+    think = ""
+    answer = text.strip()
+
+    # Case 1: has explicit <think>...</think>
+    start = lower.find(start_tag)
+    end = lower.find(end_tag)
+    if start != -1 and end != -1 and end > start:
+        think = text[start + len(start_tag):end].strip()
+        answer = text[end + len(end_tag):].strip()
+    else:
+        # Case 2: remove any inline think tags (just in case)
+        think_match = re.search(r"<think>(.*?)</think>", text, flags=re.IGNORECASE | re.DOTALL)
+        if think_match:
+            think = think_match.group(1).strip()
+        answer = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+
+    # Clean common prefixes like "Answer:" or "Final answer:"
+    answer = re.sub(r"^(final answer|answer)\s*:\s*", "", answer, flags=re.IGNORECASE).strip()
+
+    # Optionally: take only the first non-empty line as the final answer
+    if "\n" in answer:
+        for line in answer.splitlines():
+            line = line.strip()
+            if line:
+                answer = line
+                break
+
+    return think, answer
 
 
 @torch.no_grad()
@@ -101,8 +142,8 @@ def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: boo
         evidence_attention_mask = batch["evidence_attention_mask"].to(device, non_blocking=True)
         # question_ids = batch["question_ids"].to(device, non_blocking=True)
         # question_attention_mask = batch["question_attention_mask"].to(device, non_blocking=True)
-        prompt_ids = batch["prompt_ids"].to(device, non_blocking=True)
-        prompt_attention_mask = batch["prompt_attention_mask"].to(device, non_blocking=True)
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        input_attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
         ground_truths = batch["answers"]
 
         with scaler_ctx():
@@ -111,14 +152,14 @@ def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: boo
                 # Produce LoRA dict from the MetaNetwork
                 loradict = metanet.generate_lora_dict(input_ids=evidence_ids, attention_mask=evidence_attention_mask)
             gen_out = metanet.metamodel.generate(
-                input_ids=prompt_ids,
-                attention_mask=prompt_attention_mask,
+                input_ids=input_ids,
+                attention_mask=input_attention_mask,
                 loradict=loradict,
                 ignore_mem_token=True,
+                max_new_tokens=1000,
                 # **gen_kwargs,
             )
-            input_lens = prompt_attention_mask.sum(dim=1).tolist()
-            input_ids = prompt_ids
+            input_lens = input_attention_mask.sum(dim=1).tolist()
 
         # Decode per item: strip the prompt portion to keep only the generated continuation
         gen_out = gen_out.to("cpu")
@@ -133,11 +174,13 @@ def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: boo
             else:
                 # Fallback if tokenization/spacing prevents a clean prefix match
                 answer_text = full_text
-
+            
+            think_part, final_answer = extract_think_and_answer(answer_text)
             results.append({
                 "evidence": evidences[i],
                 "input": input_text,
-                "answer": answer_text,
+                "think": think_part,
+                "answer": final_answer,
                 "ground_truth": ground_truths[i],
             })
             
@@ -182,7 +225,7 @@ def main(cfg: DictConfig):
     else:
         config.num_mem_token = cfg.num_mem_token
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model.tokenizer_from)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.tokenizer_from, padding_side="left")
     metamodel = MetaModelCls.from_pretrained(cfg.model.model_from, config=config)
     metamodel.reset_mem_tokens()
     metanetwork = Metanetwork(metamodel, cfg, metamodel.lora_params_numel(cfg.model.lora_r))
@@ -216,37 +259,20 @@ def main(cfg: DictConfig):
     if is_main_process():
         logger.info("Preparing data...")
     if cfg.test.source == "loogle":
-        # 1) Main process downloads
         # names = ["shortdep_qa", "shortdep_cloze", "longdep_qa", "summarization"]
         names = ["shortdep_qa", "shortdep_cloze", "longdep_qa"]
-        if ddp_is_active() and is_main_process():
-            logger.info("Preparing data (downloading to cache if needed)...")
-            for testset in names:
-                _ = load_dataset(
-                    cfg.test.source,
-                    testset,
-                    split="test",
-                )
-                logger.info(f"Cached loogle/{testset}")
-        # 2) Sync
-        barrier()
-        # 3) Everyone loads from cache only
         datasets = []
         for testset in names:
             data = load_dataset(
-                "bigai-nlco/LooGLE",
-                testset,
+                os.path.join("bigai-nlco/LooGLE", testset),
                 split="test",
                 cache_dir=os.path.join('data', 'loogle', testset),
             )
             datasets.append(LoogleDataset(data, tokenizer, max_length=cfg.data.max_length))
             if is_main_process():
                 logger.info(f"Loaded loogle/{testset} with {len(data)} samples")
-
-        PROMPT_TEMPLATE = "Please answer the question. Only give me the answer and do not output any other words.\n\nQuestion: {question}\n\nAnswer:"
-        PROMPT_TEMPLATE_NO_METANETWORK = "\"A NEWLY PROVIDED DOCUMENT\": {evidence}\n\nPlease answer the question based on \"A NEWLY PROVIDED DOCUMENT\". Only give me the answer and do not output any other words.\n\nQuestion: {question}\n\nAnswer:"
-        collator = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, PROMPT_TEMPLATE=PROMPT_TEMPLATE)
-        collator_no_metanet = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, PROMPT_TEMPLATE=PROMPT_TEMPLATE_NO_METANETWORK)
+        collator = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=False)
+        collator_no_metanet = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=True)
     elif cfg.test.source == "easy":
         names = ["0"]
         for testset in names:
@@ -278,11 +304,21 @@ def main(cfg: DictConfig):
             datasets = [LoogleDataset(data, tokenizer, max_length=cfg.data.max_length)]
             if is_main_process():
                 logger.info(f"Loaded easy testset with {len(data)} samples")    
-            
-            PROMPT_TEMPLATE = "Please answer the question. Only give me the answer and do not output any other words.\n\nQuestion: {question}\n\nAnswer:"
-            PROMPT_TEMPLATE_NO_METANETWORK = "\"A NEWLY PROVIDED DOCUMENT\": {evidence}\n\nPlease answer the question based on \"A NEWLY PROVIDED DOCUMENT\". Only give me the answer and do not output any other words.\n\nQuestion: {question}\n\nAnswer:"
-            collator = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, PROMPT_TEMPLATE=PROMPT_TEMPLATE)
-            collator_no_metanet = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, PROMPT_TEMPLATE=PROMPT_TEMPLATE_NO_METANETWORK)
+            collator = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=False)
+            collator_no_metanet = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=True)
+    elif cfg.test.source == "squad":
+        names = ["squad"]
+        datasets = []
+        for testset in names:
+            data = load_dataset(
+                os.path.join("data", "squad"),
+                split="validation",
+            )
+            datasets.append(SquadDataset(data, tokenizer, max_length=cfg.data.max_length))
+            if is_main_process():
+                logger.info(f"Loaded {cfg.test.source}/{testset} with {len(data)} samples")
+        collator = SquadCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=False)
+        collator_no_metanet = SquadCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=True)
     else:
         raise ValueError(f"Unknown data source: {cfg.test.source}")
 

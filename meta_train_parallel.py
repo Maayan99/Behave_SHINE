@@ -42,7 +42,7 @@ import logging
 from torch.utils.tensorboard import SummaryWriter
 from metanetwork_family import Metanetwork
 
-from utils.mydataset import TextDataset, CausalLMDataCollator, create_mock_dataset
+from utils.mydataset import TextDataset, CausalLMDataCollator, create_mock_dataset, SquadDataset, SquadCollator
 from utils.myseed import set_seed
 from utils.mylogging import get_logger
 from utils.mysaveload import (
@@ -89,7 +89,7 @@ def evaluate(metanetwork_ddp_or_module, dataloader, device, use_amp: bool = Fals
 
     for batch in dataloader:
         input_ids = batch["input_ids"].to(device, non_blocking=True)
-        attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+        attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
 
         with scaler_ctx():
@@ -217,21 +217,29 @@ def main(cfg: DictConfig):
         logger.info("Preparing data...")
     if cfg.data.source == "mock":
         train_texts, val_texts = create_mock_dataset()
-    elif cfg.data.source == "transmla":
-        dataset = load_dataset(os.path.join("data", "transmla_pretrain_6B_tokens"), split="train")
-        split_dataset = dataset.train_test_split(test_size=0.001, seed=42)
-        train_texts = split_dataset["train"]
-        val_texts = split_dataset["test"]
-        if is_main_process():
-            logger.info(f"Train len: {len(train_texts)}")
-            logger.info(f"Val len: {len(val_texts)}")
+        train_ds = TextDataset(train_texts, tokenizer, max_length=cfg.data.max_length)
+        val_ds = TextDataset(val_texts, tokenizer, max_length=cfg.data.max_length)
+        collator = CausalLMDataCollator(tokenizer=tokenizer, max_length=cfg.data.max_length)
+    # elif cfg.data.source == "transmla":
+    #     dataset = load_dataset(os.path.join("data", "transmla_pretrain_6B_tokens"), split="train")
+    #     split_dataset = dataset.train_test_split(test_size=0.001, seed=42)
+    #     train_texts = split_dataset["train"]
+    #     val_texts = split_dataset["test"]
+    #     if is_main_process():
+    #         logger.info(f"Train len: {len(train_texts)}")
+    #         logger.info(f"Val len: {len(val_texts)}")
+    elif cfg.data.source == "squad":
+        # features: ['id', 'title', 'context', 'question', 'answers'],
+        # num_rows: 87599
+        train_dataset = load_dataset(os.path.join("data", "squad"), split="train")
+        val_dataset = load_dataset(os.path.join("data", "squad"), split="validation")
+        train_ds = SquadDataset(train_dataset, tokenizer, max_length=cfg.data.max_length)
+        val_ds = SquadDataset(val_dataset, tokenizer, max_length=cfg.data.max_length)
+        collator = SquadCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, metatrain=True)
     else:
         raise ValueError(f"Unknown data source: {cfg.data.source}")
 
-    train_ds = TextDataset(train_texts, tokenizer, max_length=cfg.data.max_length)
-    val_ds = TextDataset(val_texts, tokenizer, max_length=cfg.data.max_length)
-
-    collator = CausalLMDataCollator(tokenizer=tokenizer, max_length=cfg.data.max_length)
+    
 
     pin = (device.type == "cuda")
 
@@ -318,7 +326,7 @@ def main(cfg: DictConfig):
                     lr_scheduler.step()
                 continue
             input_ids = batch["input_ids"].to(device, non_blocking=True)
-            attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+            attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
             labels = batch["labels"].to(device, non_blocking=True)
 
             with torch.amp.autocast(enabled=(cfg.run.use_fp16 and device.type == "cuda"), device_type=str(device)):
@@ -462,17 +470,17 @@ def main(cfg: DictConfig):
         if ddp_is_active():
             dist.barrier()
     
-    # # Initial eval
-    # if resume_dir is None:
-    #     init_eval_without_metanetwork = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16, use_metanet=False)
-    #     if is_main_process():
-    #         logger.info(f"[without lora] loss={init_eval_without_metanetwork['eval_loss']:.4f} ppl={init_eval_without_metanetwork['perplexity']:.2f}")
-    # init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16)
-    # if writer is not None:
-    #     writer.add_scalar("eval/loss", init_eval["eval_loss"], global_step)
-    #     writer.add_scalar("eval/ppl", init_eval["perplexity"], global_step)
-    # if is_main_process():
-    #     logger.info(f"[Eval @ step {global_step}] loss={init_eval['eval_loss']:.4f} ppl={init_eval['perplexity']:.2f}")
+    # Initial eval
+    if resume_dir is None:
+        init_eval_without_metanetwork = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16, use_metanet=False)
+        if is_main_process():
+            logger.info(f"[without lora] loss={init_eval_without_metanetwork['eval_loss']:.4f} ppl={init_eval_without_metanetwork['perplexity']:.2f}")
+    init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16)
+    if writer is not None:
+        writer.add_scalar("eval/loss", init_eval["eval_loss"], global_step)
+        writer.add_scalar("eval/ppl", init_eval["perplexity"], global_step)
+    if is_main_process():
+        logger.info(f"[Eval @ step {global_step}] loss={init_eval['eval_loss']:.4f} ppl={init_eval['perplexity']:.2f}")
 
     # Main training epochs
     for epoch in range(1, cfg.optim.num_epochs + 1):

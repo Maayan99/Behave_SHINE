@@ -60,6 +60,18 @@ class LoogleDataset(Dataset):
     def __getitem__(self, idx) -> Dict[str, Any]:
         return {"question": str(self.data[idx]['question']), "evidence": str(self.data[idx]['evidence']), "answer": str(self.data[idx]['answer'])}
 
+class SquadDataset(Dataset):
+    def __init__(self, data: List[Dict[str, Any]], tokenizer, max_length: int = 512):
+        self.data = data
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx) -> Dict[str, Any]:
+        return {"evidence": str(self.data[idx]['context']), "question": str(self.data[idx]['question']), "answer": str(self.data[idx]['answers'])}
+
 # ---------------------------
 # Collator with dynamic padding and label masking
 # ---------------------------
@@ -96,50 +108,130 @@ class CausalLMDataCollator:
 @dataclass
 class LoogleCollator:
     tokenizer: Any
-    max_length: int = 512
-    PROMPT_TEMPLATE: str = "Context: {evidence}\nQuestion: {question}\nAnswer: {answer}"
+    max_length: int = 1024
+    use_reference: bool = True
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         questions = [ex["question"] for ex in batch]
         evidences = [ex["evidence"] for ex in batch]
         answers = [ex["answer"] for ex in batch]
            
-        enc = self.tokenizer(
+        evidence_enc = self.tokenizer(
             evidences,
-            truncation=True,
             padding=True,
             max_length=self.max_length,
-            return_tensors="pt",
-        )
-        evidence_ids = enc["input_ids"]
-        evidence_attention_mask = enc["attention_mask"]
-        enc = self.tokenizer(
-            questions,
             truncation=True,
-            padding=True,
-            max_length=self.max_length,
             return_tensors="pt",
         )
-        question_ids = enc["input_ids"]
-        question_attention_mask = enc["attention_mask"]
+        evidence_ids = evidence_enc["input_ids"]
+        evidence_attention_mask = evidence_enc["attention_mask"]
+        
+        if self.use_reference:
+            messages = [[
+                {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
+                {"role": "user", "content": "Please review the following reference materials."},
+                {"role": "user", "content": f"{evidence}"},
+                {"role": "user", "content": f"Based on the above, answer this question: {question}"}
+            ] for evidence, question in zip(evidences, questions)]
+        else:
+            messages = [[
+                {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
+                {"role": "user", "content": f"Please answer the following question: {question}"}
+            ] for question in questions]
 
-        prompt = [self.PROMPT_TEMPLATE.format(evidence=e, question=q, answer="") for e, q in zip(evidences, questions)]
-        enc = self.tokenizer(
-            prompt,
-            truncation=True,
-            padding=True,
-            max_length=self.max_length,
-            return_tensors="pt",
-        )
-        prompt_ids = enc["input_ids"]
-        prompt_attention_mask = enc["attention_mask"]
+        input_enc = self.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,   # adds the assistant turn start
+                tokenize=True,
+                return_tensors="pt",
+                padding=True,
+                max_length=self.max_length,
+                truncation=True,
+                return_dict=True,
+            )
+        input_ids = input_enc["input_ids"]
+        input_attention_mask = input_enc["attention_mask"]
         return {
             "evidence": evidences,
             "evidence_ids": evidence_ids,
             "evidence_attention_mask": evidence_attention_mask,
-            "question_ids": question_ids,
-            "question_attention_mask": question_attention_mask,
-            "prompt_ids": prompt_ids,
-            "prompt_attention_mask": prompt_attention_mask,
+            "input_ids": input_ids,
+            "input_attention_mask": input_attention_mask,
             "answers": answers,
+        }
+
+@dataclass
+class SquadCollator:
+    tokenizer: Any
+    max_length: int = 1024
+    use_reference: bool = True
+    metatrain: bool = False
+
+    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        questions = [ex["question"] for ex in batch]
+        evidences = [ex["evidence"] for ex in batch]
+        answers = [ex["answer"] for ex in batch]
+           
+        evidence_enc = self.tokenizer(
+            evidences,
+            padding=True,
+            max_length=self.max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        evidence_ids = evidence_enc["input_ids"]
+        evidence_attention_mask = evidence_enc["attention_mask"]
+        
+        answer_enc = self.tokenizer(
+            answers,
+            padding=True,
+            max_length=self.max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        answer_ids = answer_enc["input_ids"]
+        answer_attention_mask = answer_enc["attention_mask"]
+
+        if self.metatrain:
+            messages = [[
+                {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
+                {"role": "user", "content": f"Please answer the following question: {question}"},
+                {"role": "assistant", "content": f"{answer}"}
+            ] for question, answer in zip(questions, answers)]
+        elif self.use_reference:
+            messages = [[
+                {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
+                {"role": "user", "content": "Please review the following reference materials."},
+                {"role": "user", "content": f"{evidence}"},
+                {"role": "user", "content": f"Based on the above, answer this question: {question}"}
+            ] for evidence, question in zip(evidences, questions)]
+        else:
+            messages = [[
+                {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
+                {"role": "user", "content": f"Please answer the following question: {question}"}
+            ] for question in questions]
+
+        input_enc = self.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,   # adds the assistant turn start
+                tokenize=True,
+                return_tensors="pt",
+                padding=True,
+                max_length=self.max_length,
+                truncation=True,
+                return_dict=True,
+            )
+        input_ids = input_enc["input_ids"]
+        input_attention_mask = input_enc["attention_mask"]
+        labels = input_ids.clone()
+        return {
+            "evidence": evidences,
+            "evidence_ids": evidence_ids,
+            "evidence_attention_mask": evidence_attention_mask,
+            "input_ids": input_ids,
+            "labels": labels,
+            "input_attention_mask": input_attention_mask,
+            "answers": answers,
+            "answer_ids": answer_ids,
+            "answer_attention_mask": answer_attention_mask,
         }
