@@ -113,7 +113,7 @@ num_mem_token: 4
 # optim:
 #   learning_rate: 0.00005
 #   weight_decay: 0.01
-#   num_epochs: 3
+#   num_epochs: 2
 #   warmup_steps: 100
 #   grad_clip_norm: 0.0
 

@@ -125,6 +125,9 @@ async def amain(cfg: DictConfig):
     if cfg.test.source == "loogle":
         names = ["shortdep_qa", "shortdep_cloze", "longdep_qa", "summarization"]
         load_dir = os.path.join(cfg.test.save_path, cfg.test.source)
+    elif cfg.test.source == "squad":
+        names = ["squad"]
+        load_dir = os.path.join(cfg.test.save_path, cfg.test.source)
     else:
         raise ValueError(f"Unknown data source: {cfg.test.source}")
     
@@ -140,7 +143,6 @@ async def amain(cfg: DictConfig):
         with open(json_no_metanet_path, "r", encoding="utf-8") as f:
             res_no_metanet = json.load(f)
             
-        #?????????????????????????????????????????????????????????????
         all_scores: List[bool] = []
 
         # Process each sample (article) sequentially so we can append per-line safely,

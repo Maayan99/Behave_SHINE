@@ -137,6 +137,7 @@ def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: boo
     # }
 
     for batch_idx, batch in enumerate(testloader):
+        print(f"Processing batch {batch_idx + 1}/{len(testloader)}...")
         evidences = batch["evidence"]
         evidence_ids = batch["evidence_ids"].to(device, non_blocking=True)
         evidence_attention_mask = batch["evidence_attention_mask"].to(device, non_blocking=True)
@@ -156,7 +157,7 @@ def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: boo
                 attention_mask=input_attention_mask,
                 loradict=loradict,
                 ignore_mem_token=True,
-                max_new_tokens=1000,
+                max_new_tokens=cfg.data.max_length,
                 # **gen_kwargs,
             )
             input_lens = input_attention_mask.sum(dim=1).tolist()
@@ -314,6 +315,7 @@ def main(cfg: DictConfig):
                 os.path.join("data", "squad"),
                 split="validation",
             )
+            data = data.select(range(16))
             datasets.append(SquadDataset(data, tokenizer, max_length=cfg.data.max_length))
             if is_main_process():
                 logger.info(f"Loaded {cfg.test.source}/{testset} with {len(data)} samples")

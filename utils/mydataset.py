@@ -70,7 +70,7 @@ class SquadDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx) -> Dict[str, Any]:
-        return {"evidence": str(self.data[idx]['context']), "question": str(self.data[idx]['question']), "answer": str(self.data[idx]['answers'])}
+        return {"evidence": str(self.data[idx]['context']), "question": str(self.data[idx]['question']), "answer": str(self.data[idx]['answers']['text'][0])}
 
 # ---------------------------
 # Collator with dynamic padding and label masking
