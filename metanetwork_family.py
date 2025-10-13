@@ -82,5 +82,12 @@ class Metanetwork(nn.Module):
         else:
             outputs = self.metamodel(input_ids=input_ids, attention_mask=attention_mask, labels=labels, ignore_mem_token=True)
         return outputs
+    
+    def generate_lora_dict(self, input_ids, attention_mask):
+        outputs = self.metamodel(input_ids=input_ids, attention_mask=attention_mask)
+        memory_states = outputs.memory_states
+        plain_output = self.metanetwork(memory_states)  # (batch_size, output_dim)
+        loradict = self.metamodel.generate_lora_dict(self.lora_r, scale=self.scale, plain_tensor=plain_output)
+        return loradict
         
     

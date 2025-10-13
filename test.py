@@ -74,17 +74,10 @@ logger = get_logger("test")
 
 
 @torch.no_grad()
-def test(cfg, model, metanetwork_ddp_or_module, tokenizer, testloader, use_amp: bool = False, device: torch.device = 'cuda') -> Dict[str, float]:
+def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: bool = True, use_amp: bool = False, device: torch.device = 'cuda') -> Dict[str, float]:
     # Handle both wrapped and unwrapped metanetwork
-    if metanetwork_ddp_or_module is None:
-        use_metanet = False
-    else:
-        use_metanet = True
-        metanet = metanetwork_ddp_or_module.module if isinstance(metanetwork_ddp_or_module, DDP) else metanetwork_ddp_or_module
-
-    model.eval()
-    if use_metanet:
-        metanet.eval()
+    metanet = metanetwork_ddp_or_module.module if isinstance(metanetwork_ddp_or_module, DDP) else metanetwork_ddp_or_module
+    metanet.eval()
     if use_amp and device.type == "cuda":
         scaler_ctx = partial(torch.amp.autocast, device_type=str(device))
     else:
@@ -113,25 +106,19 @@ def test(cfg, model, metanetwork_ddp_or_module, tokenizer, testloader, use_amp: 
         ground_truths = batch["answers"]
 
         with scaler_ctx():
+            loradict = None
             if use_metanet:
                 # Produce LoRA dict from the MetaNetwork
-                loradict = metanet(input_ids=evidence_ids, attention_mask=evidence_attention_mask)
-                gen_out = model.generate(
-                    input_ids=prompt_ids,
-                    attention_mask=prompt_attention_mask,
-                    loradict=loradict,
-                    # **gen_kwargs,
-                )
-                input_lens = prompt_attention_mask.sum(dim=1).tolist()
-                input_ids = prompt_ids
-            else:
-                gen_out = model.generate(
-                    input_ids=prompt_ids,
-                    attention_mask=prompt_attention_mask,
-                    # **gen_kwargs,
-                )
-                input_lens = prompt_attention_mask.sum(dim=1).tolist()
-                input_ids = prompt_ids
+                loradict = metanet.generate_lora_dict(input_ids=evidence_ids, attention_mask=evidence_attention_mask)
+            gen_out = metanet.metamodel.generate(
+                input_ids=prompt_ids,
+                attention_mask=prompt_attention_mask,
+                loradict=loradict,
+                ignore_mem_token=True,
+                # **gen_kwargs,
+            )
+            input_lens = prompt_attention_mask.sum(dim=1).tolist()
+            input_ids = prompt_ids
 
         # Decode per item: strip the prompt portion to keep only the generated continuation
         gen_out = gen_out.to("cpu")
@@ -153,7 +140,8 @@ def test(cfg, model, metanetwork_ddp_or_module, tokenizer, testloader, use_amp: 
                 "answer": answer_text,
                 "ground_truth": ground_truths[i],
             })
-        
+            
+    metanet.train()
     return results
 
 
@@ -206,15 +194,19 @@ def main(cfg: DictConfig):
     # Training loop scaffolding
     hydra_run_dir = os.getcwd()
     ckpt_root = os.path.join(hydra_run_dir, "checkpoints")
-    if cfg.resume_global_step == "latest":
+    if cfg.test_global_step == "latest":
         resume_dir = get_latest_checkpoint(ckpt_root)
-    elif isinstance(cfg.resume_global_step, int) and cfg.resume_global_step > 0:
-        resume_dir = os.path.join(ckpt_root, f"checkpoint-{cfg.resume_global_step}")
+    elif cfg.test_global_step == "final":
+        resume_dir = os.path.join(ckpt_root, "final")
+        if not os.path.isdir(resume_dir):
+            raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
+    elif isinstance(cfg.test_global_step, int) and cfg.test_global_step > 0:
+        resume_dir = os.path.join(ckpt_root, f"checkpoint-{cfg.test_global_step}")
         if not os.path.isdir(resume_dir):
             raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
     else:
-        raise ValueError(f"Invalid resume_global_step: {cfg.resume_global_step}")
-    
+        raise ValueError(f"Invalid test_global_step: {cfg.test_global_step}")
+
     # Load model & tokenizer
     if is_main_process():
         logger.info(f"Resume mode, loading from {resume_dir}...")
@@ -231,10 +223,9 @@ def main(cfg: DictConfig):
             logger.info("Preparing data (downloading to cache if needed)...")
             for testset in names:
                 _ = load_dataset(
-                    "bigai-nlco/LooGLE",
+                    cfg.test.source,
                     testset,
                     split="test",
-                    cache_dir=os.path.join('data', 'loogle', testset),
                 )
                 logger.info(f"Cached loogle/{testset}")
         # 2) Sync
@@ -252,8 +243,8 @@ def main(cfg: DictConfig):
             if is_main_process():
                 logger.info(f"Loaded loogle/{testset} with {len(data)} samples")
 
-        PROMPT_TEMPLATE = " Please answer the question as short as you can. {question}"
-        PROMPT_TEMPLATE_NO_METANETWORK = "You know that \"{evidence}\" Please answer the question as short as you can \"{question}\""
+        PROMPT_TEMPLATE = "Please answer the question. Only give me the answer and do not output any other words.\n\nQuestion: {question}\n\nAnswer:"
+        PROMPT_TEMPLATE_NO_METANETWORK = "\"A NEWLY PROVIDED DOCUMENT\": {evidence}\n\nPlease answer the question based on \"A NEWLY PROVIDED DOCUMENT\". Only give me the answer and do not output any other words.\n\nQuestion: {question}\n\nAnswer:"
         collator = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, PROMPT_TEMPLATE=PROMPT_TEMPLATE)
         collator_no_metanet = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, PROMPT_TEMPLATE=PROMPT_TEMPLATE_NO_METANETWORK)
     elif cfg.test.source == "easy":
@@ -288,8 +279,8 @@ def main(cfg: DictConfig):
             if is_main_process():
                 logger.info(f"Loaded easy testset with {len(data)} samples")    
             
-            PROMPT_TEMPLATE = " Please answer the question as short as you can. {question}"
-            PROMPT_TEMPLATE_NO_METANETWORK = "You know that \"{evidence}\" Please answer the question as short as you can \"{question}\""
+            PROMPT_TEMPLATE = "Please answer the question. Only give me the answer and do not output any other words.\n\nQuestion: {question}\n\nAnswer:"
+            PROMPT_TEMPLATE_NO_METANETWORK = "\"A NEWLY PROVIDED DOCUMENT\": {evidence}\n\nPlease answer the question based on \"A NEWLY PROVIDED DOCUMENT\". Only give me the answer and do not output any other words.\n\nQuestion: {question}\n\nAnswer:"
             collator = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, PROMPT_TEMPLATE=PROMPT_TEMPLATE)
             collator_no_metanet = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, PROMPT_TEMPLATE=PROMPT_TEMPLATE_NO_METANETWORK)
     else:
@@ -332,8 +323,8 @@ def main(cfg: DictConfig):
             dist.barrier()
 
         # ===== Generate answers on this split and save to JSON (DDP-safe) =====
-        local_results = test(cfg, model, metanetwork, tokenizer, test_loader, use_amp=cfg.run.use_fp16, device=device)
-        local_results_no_metanet = test(cfg, model, None, tokenizer, test_loader_no_metanet, use_amp=cfg.run.use_fp16, device=device)
+        local_results = test(cfg, metanetwork, tokenizer, test_loader, use_metanet=True, use_amp=cfg.run.use_fp16, device=device)
+        local_results_no_metanet = test(cfg, metanetwork, tokenizer, test_loader_no_metanet, use_metanet=False, use_amp=cfg.run.use_fp16, device=device)
 
         # Gather results across ranks (if distributed), then write once on rank 0
         if ddp_is_active():
