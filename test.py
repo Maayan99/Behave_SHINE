@@ -146,6 +146,7 @@ def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: boo
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         input_attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
         ground_truths = batch["answers"]
+        questions = batch["questions"]
 
         with scaler_ctx():
             loradict = None
@@ -157,7 +158,7 @@ def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: boo
                 attention_mask=input_attention_mask,
                 loradict=loradict,
                 ignore_mem_token=True,
-                max_new_tokens=cfg.data.max_length,
+                max_new_tokens=100,
                 # **gen_kwargs,
             )
             input_lens = input_attention_mask.sum(dim=1).tolist()
@@ -181,8 +182,9 @@ def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: boo
                 "evidence": evidences[i],
                 "input": input_text,
                 "think": think_part,
+                "question": questions[i],
                 "answer": final_answer,
-                "ground_truth": ground_truths[i],
+                "ground_truth": ground_truths[i],      
             })
             
     metanet.train()

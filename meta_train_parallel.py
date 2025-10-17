@@ -145,6 +145,14 @@ def main(cfg: DictConfig):
             "For transformer metanetwork, num_mem_token must be set to model.lora_params_numel(lora_r) / (hidden_size * num_layers)"
         config.num_mem_token = tmp_model.lora_params_numel(cfg.model.lora_r) // (cfg.hidden_size * cfg.num_layers)
         cfg.num_mem_token = config.num_mem_token
+        if is_main_process():
+            print(tmp_model)
+            print()
+            for n, p in tmp_model.named_parameters():
+                print(f"{n}: {p.numel()}, {p.requires_grad}")
+            print()
+            print("num mem token: ", config.num_mem_token)
+            exit()
         del tmp_model
         if is_main_process():
             logger.info(f"Using transformer metanetwork, set num_mem_token to {config.num_mem_token}")

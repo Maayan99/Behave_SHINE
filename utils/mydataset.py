@@ -234,4 +234,5 @@ class SquadCollator:
             "answers": answers,
             "answer_ids": answer_ids,
             "answer_attention_mask": answer_attention_mask,
+            "questions": questions,
         }

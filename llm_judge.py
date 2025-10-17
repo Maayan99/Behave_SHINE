@@ -6,7 +6,7 @@ import json
 from openai import AsyncOpenAI
 from openai import APIError, RateLimitError, APITimeoutError
 from typing import Any, Dict, List
-from tqdm import tqdm
+import tqdm
 
 PROMPT_TEMPLATE = (
     "Question: {question}\n"
@@ -15,9 +15,9 @@ PROMPT_TEMPLATE = (
 )
 
 SYS_MSG = (
-    "Given one question, there is a groundtruth and a predict_answer. "
+    "Given one question, there is a groundtruth and a predict_answer."
     "Please decide whether they are the same or not in semantic. "
-    "Please only output 'True' or 'False' ."
+    "Please only output 'True' or 'False'."
 )
 
 async def safe_chat_complete(
@@ -63,7 +63,9 @@ def parse_bool(text: str) -> bool:
 async def score_one_qa(
     client: AsyncOpenAI,
     model: str,
-    qa: Dict[str, Any],
+    question: str,
+    answer: str,
+    ground_truth: str,
     sem: asyncio.Semaphore,
     max_retries: int,
 ) -> bool:
@@ -72,9 +74,9 @@ async def score_one_qa(
         {
             "role": "user",
             "content": PROMPT_TEMPLATE.format(
-                question=qa["Q"],
-                reference=qa["A"],
-                pred=qa["P"],
+                question=question,
+                reference=ground_truth,
+                pred=answer,
             ),
         },
     ]
@@ -87,7 +89,6 @@ async def score_one_qa(
     )
     return parse_bool(reply)
 
-#???????????????????????????????????????????????????????????????????????????
 async def process_sample(
     client: AsyncOpenAI,
     model: str,
@@ -95,26 +96,23 @@ async def process_sample(
     sem: asyncio.Semaphore,
     max_retries: int,
 ) -> Dict[str, Any]:
-    # Normalize potential 'qa' key
-    if "qa" in sample:  # Some mistakes in upstream data
-        sample["qa_pairs"] = sample["qa"]
-        del sample["qa"]
 
-    qa_pairs = sample.get("qa_pairs", [])
     tasks = []
-    for qa in qa_pairs:
+    for i in range(len(sample)):
         tasks.append(
             score_one_qa(
                 client=client,
                 model=model,
-                qa=qa,
+                question=sample[i]["question"],
+                answer=sample[i]["answer"],
+                ground_truth=sample[i]["ground_truth"],
                 sem=sem,
                 max_retries=max_retries,
             )
         )
     scores: List[bool] = await asyncio.gather(*tasks)
-    for qa, s in zip(qa_pairs, scores):
-        qa["score"] = s
+    for i, s in enumerate(scores):
+        sample[i]["score"] = s
     return sample
 
 @hydra.main(version_base=None, config_path="configs", config_name="base")
@@ -136,56 +134,52 @@ async def amain(cfg: DictConfig):
     
     for name in names:
         json_path = os.path.join(load_dir, f"{name}.json")
-        json_no_metanet_path = json_path.replace(".json", "_no_metanet.json")
+        json_path_no_metanet = json_path.replace(".json", "_no_metanet.json")
 
         with open(json_path, "r", encoding="utf-8") as f:
             res = json.load(f)
-        with open(json_no_metanet_path, "r", encoding="utf-8") as f:
+        with open(json_path_no_metanet, "r", encoding="utf-8") as f:
             res_no_metanet = json.load(f)
-            
-        all_scores: List[bool] = []
 
-        # Process each sample (article) sequentially so we can append per-line safely,
-        # but do each sample's QAs concurrently.
-        pbar = tqdm.tqdm(res, desc="Evaluating with metanetwork")
-        for sample in pbar:
-            try:
-                updated = await process_sample(
-                    client=client,
-                    model=cfg.test.model,
-                    sample=sample,
-                    sem=sem,
-                    max_retries=cfg.test.max_retries,
-                )
-            except Exception as e:
-                # If a sample fails entirely, keep a trace and continue
-                updated = sample
-                updated["_error"] = f"{type(e).__name__}: {e}"
+        async def judge(res, json_path):
+            all_scores: List[bool] = []
+            # Process each sample (article) sequentially so we can append per-line safely,
+            # but do each sample's QAs concurrently.
+            pbar = tqdm(range(0, len(res), cfg.test.max_concurrency), desc="Evaluating with metanetwork")
+            for i in pbar:
+                batch = res[i:i + cfg.test.max_concurrency]
+                try:
+                    updated = await process_sample(
+                        client=client,
+                        model=cfg.test.model,
+                        sample=batch,
+                        sem=sem,
+                        max_retries=cfg.test.max_retries,
+                    )
+                except Exception as e:
+                    # If a sample fails entirely, keep a trace and continue
+                    updated = batch
+                    updated["_error"] = f"{type(e).__name__}: {e}"
 
-            # Collect scores for average in this run
-            for qa in updated.get("qa_pairs", []):
-                if "score" in qa and isinstance(qa["score"], bool):
-                    all_scores.append(qa["score"])
+                # Collect scores for average in this run
+                for t in updated:
+                    if "score" in t and isinstance(t["score"], bool):
+                        all_scores.append(t["score"])
 
-            # Write out
-            if args.result_file.endswith(".jsonl"):
-                with open(args.result_file, "a", encoding="utf-8") as f:
+                # Write out
+                with open(json_path.replace(".json", "_results.json"), "a", encoding="utf-8") as f:
                     f.write(json.dumps(updated, ensure_ascii=True) + "\n")
 
-        # If JSON output requested, dump the whole (possibly partially resumed) dataset
-        if args.result_file.endswith(".json"):
-            # Merge back the processed tail with the already-finished head (if any)
-            merged = eval_data[:offset] + eval_data_to_run
-            with open(args.result_file, "w", encoding="utf-8") as f:
-                json.dump(merged, f, indent=4, ensure_ascii=True)
-
-        # Summary
-        if all_scores:
-            avg = sum(all_scores) / len(all_scores)
-            print(f"Average = {avg:.6f}")
-        else:
-            print("Average = NA (no new samples evaluated)")
+            # Summary
+            if all_scores:
+                avg = sum(all_scores) / len(all_scores)
+                print(f"Average = {avg:.6f}")
+                with open(json_path.replace(".json", "_results.json"), "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"Average": avg}, ensure_ascii=True) + "\n")
         
-    
+        judge(res, json_path)
+        judge(res_no_metanet, json_path_no_metanet)
+        
+        
 if __name__ == "__main__":
     main()
