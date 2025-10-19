@@ -1,19 +1,19 @@
 #!/bin/bash
 
-#SBATCH -J metalora
+#SBATCH -J test
 #SBATCH -p IAI_SLURM_HGX
 #SBATCH --qos=16gpu-hgx
 #SBATCH -N 1
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:8
 #SBATCH --time=48:00:00
 #SBATCH -c 64
-#SBATCH -o metalora.out
-#SBATCH -e metalora.err
+#SBATCH -o test.out
+#SBATCH -e test.err
 
 
-NUM_GPUS=4
+NUM_GPUS=8
 MASTER_PORT=18900             
-CONFIG_NAME="base"       
+CONFIG_NAME="Qwen3-0.6B"       
         
 
 # Find available port
@@ -35,6 +35,6 @@ torchrun \
     --node_rank=0 \
     --master_addr="127.0.0.1" \
     --master_port=$MASTER_PORT \
-    meta_train_parallel.py \
-    +experiment=$CONFIG_NAME \
-    > tmp.txt 2>&1
+    test.py \
+    --config-name $CONFIG_NAME \
+    > tmp_test.txt 2>&1

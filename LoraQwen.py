@@ -58,6 +58,13 @@ class LoraLinear(nn.Linear):
         idx += self.out_features * r
         C = plain_tensor[:, idx: idx + self.out_features].view(-1, self.out_features) * scale if self.bias is not None else None
         return {"A": A, "B": B, "C": C}
+    
+    def init_lora_dict(self, r, scale, device):
+        A = (torch.randn(size=(1, self.in_features, r), device=device) * sqrt(scale)).detach()
+        A.requires_grad_()
+        B = torch.zeros(size=(1, r, self.out_features), requires_grad=True, device=device)
+        C = torch.zeros(size=(1, self.out_features), requires_grad=True, device=device) if self.bias is not None else None
+        return {"A": A, "B": B, "C": C}
 
 class LoraQwen3MLP(Qwen3MLP):
     def __init__(self, config):
@@ -86,6 +93,12 @@ class LoraQwen3MLP(Qwen3MLP):
         up = self.up_proj.generate_lora_dict(r, scale, plain_tensor[:, idx: idx + self.up_proj.lora_params_numel(r)])
         idx += self.up_proj.lora_params_numel(r)
         down = self.down_proj.generate_lora_dict(r, scale, plain_tensor[:, idx: idx + self.down_proj.lora_params_numel(r)])
+        return {"gate": gate, "up": up, "down": down}
+
+    def init_lora_dict(self, r, scale, device):
+        gate = self.gate_proj.init_lora_dict(r, scale, device)
+        up = self.up_proj.init_lora_dict(r, scale, device)
+        down = self.down_proj.init_lora_dict(r, scale, device)
         return {"gate": gate, "up": up, "down": down}
 
 
@@ -183,6 +196,13 @@ class LoraQwen3Attention(Qwen3Attention):
         o = self.o_proj.generate_lora_dict(r, scale, plain_tensor[:, idx: idx + self.o_proj.lora_params_numel(r)])
         return {"q": q, "k": k, "v": v, "o": o}
 
+    def init_lora_dict(self, r, scale, device):
+        q = self.q_proj.init_lora_dict(r, scale, device)
+        k = self.k_proj.init_lora_dict(r, scale, device)
+        v = self.v_proj.init_lora_dict(r, scale, device)
+        o = self.o_proj.init_lora_dict(r, scale, device)
+        return {"q": q, "k": k, "v": v, "o": o}
+    
 class Qwen3DecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: Qwen3Config, layer_idx: int):
         super().__init__()
@@ -289,6 +309,9 @@ class LoraQwen3DecoderLayer(Qwen3DecoderLayer):
         idx += self.self_attn.lora_params_numel(r)
         mlp = self.mlp.generate_lora_dict(r, scale, plain_tensor[:, idx: idx + self.mlp.lora_params_numel(r)])
         return {"attention": attention, "mlp": mlp}
+
+    def init_lora_dict(self, r, scale, device):
+        return {"attention": self.self_attn.init_lora_dict(r, scale, device), "mlp": self.mlp.init_lora_dict(r, scale, device)}
 
 @auto_docstring
 class Qwen3PreTrainedModel(PreTrainedModel):
@@ -457,6 +480,12 @@ class LoraQwen3Model(Qwen3PreTrainedModel):
             idx += layer_lora_params_numel
         return loradict
 
+    def init_lora_dict(self, r, scale, device):
+        loradict = {}
+        for i, layer in enumerate(self.layers):
+            loradict[i] = layer.init_lora_dict(r, scale, device)
+        return loradict
+    
 @dataclass
 class MemoryCausalLMOutputWithPast(CausalLMOutputWithPast):
     '''
@@ -526,6 +555,18 @@ class LoraQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
+        # if loradict is not None:
+        #     print("use lora dict !!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        #     if getattr(self, "cache_lora_dict", None) is not None:
+        #         # check if the same
+        #         for k in loradict:
+        #             for subk in loradict[k]:
+        #                 for param in loradict[k][subk]:
+        #                     for t in loradict[k][subk][param]:
+        #                         if loradict[k][subk][param][t] is not None and not torch.equal(loradict[k][subk][param][t], self.cache_lora_dict[k][subk][param][t]):
+        #                             print(f"different lora dicts {k}.{subk}.{param}.{t} !!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        #     self.cache_lora_dict = loradict
+         
         outputs: MemoryModelOutputWithPast = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -543,7 +584,69 @@ class LoraQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
+        
+        # # ---- START DEBUG ---- 
+        # tok = kwargs.get("debug_tokenizer", None)
+        # if tok is not None:
+        #     # Choose tokenizer from either kwarg
+        #     has_tok = tok is not None and hasattr(tok, "convert_ids_to_tokens")
 
+        #     with torch.no_grad():
+        #         # Align labels to the logits slice
+        #         if labels is not None:
+        #             labels_slice = labels[:, slice_indices]  # (B, T')
+        #         B, T, V = logits.shape
+
+        #         # Temperature = 1 (no scaling)
+        #         probs = torch.softmax(logits, dim=-1)  # (B, T, V)
+
+        #         # Compute top-k over all time steps
+        #         topk_vals, topk_idx = torch.topk(logits, k=5, dim=-1)  # (B, T, 5)
+
+        #         for b in range(B):
+        #             print(f"[DEBUG] Batch {b}:")
+        #             for t in range(T):
+        #                 if labels is not None:
+        #                     try:
+        #                         lab = int(labels_slice[b, t + 1].item())
+        #                     except:
+        #                         lab = -100
+        #                 #     if lab == -100:
+        #                 #         continue  # skip unlabeled positions
+
+        #                 # Top-k for this (b, t)
+        #                 ids_bt   = topk_idx[b, t].tolist()
+        #                 vals_bt  = topk_vals[b, t].tolist()
+        #                 probs_bt = probs[b, t, ids_bt].tolist()
+        #                 toks_bt  = tok.convert_ids_to_tokens(ids_bt) if has_tok else None
+
+        #                 print(f"  [t={t}]")
+        #                 for r, (vid, vlogit, vprob) in enumerate(zip(ids_bt, vals_bt, probs_bt), start=1):
+        #                     if has_tok:
+        #                         print(
+        #                             f"    Top{r}: token_id={vid:<8} token={repr(toks_bt[r-1])} "
+        #                             f"logit={vlogit:.4f} prob={vprob:.6f}"
+        #                         )
+        #                     else:
+        #                         print(
+        #                             f"    Top{r}: token_id={vid:<8} logit={vlogit:.4f} prob={vprob:.6f}"
+        #                         )
+        #                 if labels is not None and lab != -100:
+        #                     # Label token info for this (b, t)
+        #                     lab_logit = logits[b, t, lab].item()
+        #                     lab_prob  = probs[b, t, lab].item()
+        #                     if has_tok:
+        #                         lab_tok = tok.convert_ids_to_tokens([lab])[0]
+        #                         print(
+        #                             f"    Label: token_id={lab:<8} token={repr(lab_tok)} "
+        #                             f"logit={lab_logit:.4f} prob={lab_prob:.6f}"
+        #                         )
+        #                     else:
+        #                         print(
+        #                             f"    Label: token_id={lab:<8} logit={lab_logit:.4f} prob={lab_prob:.6f}"
+        #                         )
+        # # ---- END DEBUG ----
+        
         loss = None
         if labels is not None:
             loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
@@ -562,6 +665,9 @@ class LoraQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
     
     def generate_lora_dict(self, r, scale, plain_tensor):
         return self.model.generate_lora_dict(r, scale, plain_tensor)
-    
+
+    def init_lora_dict(self, r, scale, device):
+        return self.model.init_lora_dict(r, scale, device)
+
 if __name__ == "__main__":
     config_path = "./models/Qwen3-0.6B"

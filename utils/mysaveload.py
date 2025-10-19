@@ -12,11 +12,12 @@ import time
 
 logger = get_logger("save & load")
 
-def save_checkpoint(metanetwork, out_dir: str, extra_state: Dict[str, Any] = None):
+def save_checkpoint(metanetwork, out_dir: str, metalora: Any, extra_state: Dict[str, Any] = None):
     os.makedirs(out_dir, exist_ok=True)
     if metanetwork.metamodel.model.use_mem_token:
         torch.save(metanetwork.metamodel.model.mem_tokens, os.path.join(out_dir, "mem_tokens.pt"))
     torch.save(metanetwork.metanetwork.state_dict(), os.path.join(out_dir, "metanetwork.pth"))
+    torch.save(metalora, os.path.join(out_dir, "metalora.pth"))
     if extra_state is not None:
         with open(os.path.join(out_dir, "trainer_state.json"), "w", encoding="utf-8") as f:
             json.dump(extra_state, f, ensure_ascii=False, indent=2)
@@ -28,9 +29,11 @@ def load_checkpoint(metanetwork, in_dir, device: str):
         assert saved_mem_tokens.shape == metanetwork.metamodel.model.mem_tokens.shape, f"Shape mismatch for mem_tokens: saved {saved_mem_tokens.shape}, model {metanetwork.metamodel.model.mem_tokens.shape}"
         metanetwork.metamodel.model.mem_tokens = saved_mem_tokens
     metanetwork.metanetwork.load_state_dict(torch.load(os.path.join(in_dir, "metanetwork.pth"), weights_only=False, map_location="cpu"))
+    metalora = torch.load(os.path.join(in_dir, "metalora.pth"), map_location="cpu", weights_only=False)
     metanetwork.to(device)
+    metalora = move_to_device_and_change_into_leaf(metalora, device)
     freeze(metanetwork.metamodel)
-    return metanetwork
+    return metanetwork, metalora
 
 def _rng_state_dict():
     state = {
@@ -103,3 +106,14 @@ def get_latest_checkpoint(root_dir: str) -> str:
         return None
     steps.sort()
     return os.path.join(root_dir, steps[-1][1])
+
+def move_to_device_and_change_into_leaf(obj, device):
+    if torch.is_tensor(obj):
+        new_obj = obj.to(device).detach().requires_grad_()
+        return new_obj
+    elif isinstance(obj, dict):
+        return {k: move_to_device_and_change_into_leaf(v, device) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [move_to_device_and_change_into_leaf(x, device) for x in obj]
+    else:
+        return obj

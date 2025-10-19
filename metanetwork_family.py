@@ -69,22 +69,20 @@ class Metanetwork(nn.Module):
         else:
             raise ValueError(f"Unknown metanetwork type: {cfg.metanetwork.type}")
 
-    def forward(self, input_ids, attention_mask, labels = None, use_metanet = True) -> dict:
+    def forward(self, input_ids, input_attention_mask, evidence_ids, evidence_attention_mask, metalora = None, labels = None, use_metanet = True, **kwargs) -> dict:
         '''
         memory_states: (batch_size, num_layer, num_mem_token, hidden_size)
         '''
         if use_metanet:
-            outputs = self.metamodel(input_ids=input_ids, attention_mask=attention_mask)
-            memory_states = outputs.memory_states
-            plain_output = self.metanetwork(memory_states)  # (batch_size, output_dim)
-            loradict = self.metamodel.generate_lora_dict(self.lora_r, scale=self.scale, plain_tensor=plain_output)
-            outputs = self.metamodel(input_ids=input_ids, attention_mask=attention_mask, loradict=loradict, labels=labels, ignore_mem_token=True)
+            assert metalora is not None, "metalora cannot be None when use_metanet is True"
+            loradict = self.generate_lora_dict(evidence_ids, evidence_attention_mask, metalora)
+            outputs = self.metamodel(input_ids=input_ids, attention_mask=input_attention_mask, loradict=loradict, labels=labels, ignore_mem_token=True, **kwargs)
         else:
-            outputs = self.metamodel(input_ids=input_ids, attention_mask=attention_mask, labels=labels, ignore_mem_token=True)
+            outputs = self.metamodel(input_ids=input_ids, attention_mask=input_attention_mask, labels=labels, ignore_mem_token=True, **kwargs)
         return outputs
     
-    def generate_lora_dict(self, input_ids, attention_mask):
-        outputs = self.metamodel(input_ids=input_ids, attention_mask=attention_mask)
+    def generate_lora_dict(self, evidence_ids, evidence_attention_mask, metalora):
+        outputs = self.metamodel(input_ids=evidence_ids, attention_mask=evidence_attention_mask, loradict=metalora)
         memory_states = outputs.memory_states
         plain_output = self.metanetwork(memory_states)  # (batch_size, output_dim)
         loradict = self.metamodel.generate_lora_dict(self.lora_r, scale=self.scale, plain_tensor=plain_output)

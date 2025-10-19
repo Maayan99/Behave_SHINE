@@ -70,6 +70,7 @@ from utils.myinit import _resolve_device, _import_class
 from collections import OrderedDict
 import time
 import re
+from meta_train_parallel import generate_stepwise
 
 logger = get_logger("test")
 
@@ -115,7 +116,10 @@ def extract_think_and_answer(text: str) -> Tuple[str, str]:
 
 
 @torch.no_grad()
-def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: bool = True, use_amp: bool = False, device: torch.device = 'cuda') -> Dict[str, float]:
+def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: bool = True, metalora: Any = None, use_amp: bool = False, device: torch.device = 'cuda') -> Dict[str, float]:
+    if use_metanet:
+        assert metalora is not None, "metalora cannot be None when use_metanet is True"
+    
     # Handle both wrapped and unwrapped metanetwork
     metanet = metanetwork_ddp_or_module.module if isinstance(metanetwork_ddp_or_module, DDP) else metanetwork_ddp_or_module
     metanet.eval()
@@ -147,24 +151,51 @@ def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: boo
         input_attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
         ground_truths = batch["answers"]
         questions = batch["questions"]
+        labels = None if batch["labels"] is None else batch["labels"].to(device, non_blocking=True)
 
         with scaler_ctx():
             loradict = None
             if use_metanet:
                 # Produce LoRA dict from the MetaNetwork
-                loradict = metanet.generate_lora_dict(input_ids=evidence_ids, attention_mask=evidence_attention_mask)
+                loradict = metanet.generate_lora_dict(evidence_ids=evidence_ids, evidence_attention_mask=evidence_attention_mask, metalora=metalora)
             gen_out = metanet.metamodel.generate(
                 input_ids=input_ids,
                 attention_mask=input_attention_mask,
                 loradict=loradict,
                 ignore_mem_token=True,
-                max_new_tokens=100,
-                # **gen_kwargs,
+                max_new_tokens=1000,
+                do_sample=False,
+                # return_dict_in_generate=True,
+                # output_scores=True
             )
             input_lens = input_attention_mask.sum(dim=1).tolist()
+            
+            # gen_out = generate_stepwise(
+            #     model=metanet.metamodel,
+            #     input_ids=input_ids,
+            #     attention_mask=input_attention_mask,
+            #     loradict=loradict,
+            #     ignore_mem_token=True,
+            #     max_new_tokens=1000,
+            #     do_sample=False,
+            #     tokenizer=tokenizer,
+            #     device=device,
+            # )
+            # input_lens = input_attention_mask.sum(dim=1).tolist()
 
+        # scores = torch.stack(gen_out.scores)  # [seq_len, batch, vocab]
+        # probs = F.softmax(scores, dim=-1)
+
+        # for step, step_probs in enumerate(probs):
+        #     topk = torch.topk(step_probs[0], 5)
+        #     print(f"\nStep {step+1}")
+        #     for token_id, prob in zip(topk.indices, topk.values):
+        #         print(f"{tokenizer.decode(token_id)}\t{prob.item():.4f}")
+        # exit()
+        
         # Decode per item: strip the prompt portion to keep only the generated continuation
         gen_out = gen_out.to("cpu")
+        tokens = tokenizer.convert_ids_to_tokens(gen_out[0])
         input_ids_cpu = input_ids.to("cpu")
 
         for i in range(gen_out.size(0)):
@@ -172,18 +203,22 @@ def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: boo
             input_text = tokenizer.decode(input_ids_cpu[i][-input_lens[i] :], skip_special_tokens=True)
             # Keep only the continuation after the prompt (best-effort split)
             if full_text.startswith(input_text):
-                answer_text = full_text[len(input_text):].strip()
+                answer_text = full_text[len(input_text):]
             else:
                 # Fallback if tokenization/spacing prevents a clean prefix match
                 answer_text = full_text
+
+            if not use_metanet:
+                think, answer = extract_think_and_answer(answer_text)
+            else:
+                think, answer = "I know the answer because I have read something about this.", answer_text
             
-            think_part, final_answer = extract_think_and_answer(answer_text)
             results.append({
                 "evidence": evidences[i],
                 "input": input_text,
-                "think": think_part,
                 "question": questions[i],
-                "answer": final_answer,
+                "think": think,
+                "answer": answer,
                 "ground_truth": ground_truths[i],      
             })
             
@@ -191,7 +226,7 @@ def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: boo
     return results
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="base")
+@hydra.main(version_base=None, config_path="configs")
 def main(cfg: DictConfig):  
     # ========= DDP init (safe for single-process) =========
     ddp_init_if_needed()
@@ -240,12 +275,17 @@ def main(cfg: DictConfig):
     # Training loop scaffolding
     hydra_run_dir = os.getcwd()
     ckpt_root = os.path.join(hydra_run_dir, "checkpoints")
+    
     if cfg.test_global_step == "latest":
         resume_dir = get_latest_checkpoint(ckpt_root)
     elif cfg.test_global_step == "final":
         resume_dir = os.path.join(ckpt_root, "final")
         if not os.path.isdir(resume_dir):
             raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
+    # elif cfg.test_global_step == "best":
+    #     resume_dir = os.path.join(ckpt_root, "best")
+    #     if not os.path.isdir(resume_dir):
+    #         raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
     elif isinstance(cfg.test_global_step, int) and cfg.test_global_step > 0:
         resume_dir = os.path.join(ckpt_root, f"checkpoint-{cfg.test_global_step}")
         if not os.path.isdir(resume_dir):
@@ -256,60 +296,60 @@ def main(cfg: DictConfig):
     # Load model & tokenizer
     if is_main_process():
         logger.info(f"Resume mode, loading from {resume_dir}...")
-    metanetwork = load_checkpoint(metanetwork, resume_dir, device)
+    metanetwork, metalora = load_checkpoint(metanetwork, resume_dir, device)
 
     # Data
     if is_main_process():
         logger.info("Preparing data...")
-    if cfg.test.source == "loogle":
-        # names = ["shortdep_qa", "shortdep_cloze", "longdep_qa", "summarization"]
-        names = ["shortdep_qa", "shortdep_cloze", "longdep_qa"]
-        datasets = []
-        for testset in names:
-            data = load_dataset(
-                os.path.join("bigai-nlco/LooGLE", testset),
-                split="test",
-                cache_dir=os.path.join('data', 'loogle', testset),
-            )
-            datasets.append(LoogleDataset(data, tokenizer, max_length=cfg.data.max_length))
-            if is_main_process():
-                logger.info(f"Loaded loogle/{testset} with {len(data)} samples")
-        collator = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=False)
-        collator_no_metanet = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=True)
-    elif cfg.test.source == "easy":
-        names = ["0"]
-        for testset in names:
-            texts = [
-                "What does lewis eat every evening ?",
-                "What does lewis eat every morning ?",
-                "What is most expensive in Beijing ?",
-                "Why Jack refuse to see Alice ?",
-                "Does Jack love Alice ?",
-                "What's the meaning when I say I don't like it ?",
-            ]
-            answers = [
-                "Rice",
-                "Dumplings",
-                "Housing prices",
-                "Because he hates her",
-                "No",
-                "I hate it very much",
-            ]
-            evidences = [
-                "Lewis eats dumplings every morning and rice every evening.",
-                "Lewis eats dumplings every morning and rice every evening.",
-                "The most expensive thing in Beijing is housing prices.",
-                "Jack refuse to see Alice because he hates her.",
-                "Jack refuse to see Alice because he hates her.",
-                "When I say I don't like it I mean I hate it very much."
-            ]
-            data = [{"question": q, "evidence": e, "answer": a} for q, e, a in zip(texts, evidences, answers)]
-            datasets = [LoogleDataset(data, tokenizer, max_length=cfg.data.max_length)]
-            if is_main_process():
-                logger.info(f"Loaded easy testset with {len(data)} samples")    
-            collator = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=False)
-            collator_no_metanet = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=True)
-    elif cfg.test.source == "squad":
+    # if cfg.test.source == "loogle":
+    #     # names = ["shortdep_qa", "shortdep_cloze", "longdep_qa", "summarization"]
+    #     names = ["shortdep_qa", "shortdep_cloze", "longdep_qa"]
+    #     datasets = []
+    #     for testset in names:
+    #         data = load_dataset(
+    #             os.path.join("bigai-nlco/LooGLE", testset),
+    #             split="test",
+    #             cache_dir=os.path.join('data', 'loogle', testset),
+    #         )
+    #         datasets.append(LoogleDataset(data, tokenizer, max_length=cfg.data.max_length))
+    #         if is_main_process():
+    #             logger.info(f"Loaded loogle/{testset} with {len(data)} samples")
+    #     collator = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=False)
+    #     collator_no_metanet = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=True)
+    # elif cfg.test.source == "easy":
+    #     names = ["0"]
+    #     for testset in names:
+    #         texts = [
+    #             "What does lewis eat every evening ?",
+    #             "What does lewis eat every morning ?",
+    #             "What is most expensive in Beijing ?",
+    #             "Why Jack refuse to see Alice ?",
+    #             "Does Jack love Alice ?",
+    #             "What's the meaning when I say I don't like it ?",
+    #         ]
+    #         answers = [
+    #             "Rice",
+    #             "Dumplings",
+    #             "Housing prices",
+    #             "Because he hates her",
+    #             "No",
+    #             "I hate it very much",
+    #         ]
+    #         evidences = [
+    #             "Lewis eats dumplings every morning and rice every evening.",
+    #             "Lewis eats dumplings every morning and rice every evening.",
+    #             "The most expensive thing in Beijing is housing prices.",
+    #             "Jack refuse to see Alice because he hates her.",
+    #             "Jack refuse to see Alice because he hates her.",
+    #             "When I say I don't like it I mean I hate it very much."
+    #         ]
+    #         data = [{"question": q, "evidence": e, "answer": a} for q, e, a in zip(texts, evidences, answers)]
+    #         datasets = [LoogleDataset(data, tokenizer, max_length=cfg.data.max_length)]
+    #         if is_main_process():
+    #             logger.info(f"Loaded easy testset with {len(data)} samples")    
+    #         collator = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=False)
+    #         collator_no_metanet = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=True)
+    if cfg.test.source == "squad":
         names = ["squad"]
         datasets = []
         for testset in names:
@@ -317,7 +357,6 @@ def main(cfg: DictConfig):
                 os.path.join("data", "squad"),
                 split="validation",
             )
-            data = data.select(range(16))
             datasets.append(SquadDataset(data, tokenizer, max_length=cfg.data.max_length))
             if is_main_process():
                 logger.info(f"Loaded {cfg.test.source}/{testset} with {len(data)} samples")
@@ -363,8 +402,9 @@ def main(cfg: DictConfig):
             dist.barrier()
 
         # ===== Generate answers on this split and save to JSON (DDP-safe) =====
-        local_results = test(cfg, metanetwork, tokenizer, test_loader, use_metanet=True, use_amp=cfg.run.use_fp16, device=device)
+        local_results = test(cfg, metanetwork, tokenizer, test_loader, use_metanet=True, use_amp=cfg.run.use_fp16, device=device, metalora=metalora)
         local_results_no_metanet = test(cfg, metanetwork, tokenizer, test_loader_no_metanet, use_metanet=False, use_amp=cfg.run.use_fp16, device=device)
+        
 
         # Gather results across ranks (if distributed), then write once on rank 0
         if ddp_is_active():

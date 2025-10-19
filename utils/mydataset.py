@@ -70,7 +70,7 @@ class SquadDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx) -> Dict[str, Any]:
-        return {"evidence": str(self.data[idx]['context']), "question": str(self.data[idx]['question']), "answer": str(self.data[idx]['answers']['text'][0])}
+        return {"evidence": str(self.data[idx]['context']), "question": str(self.data[idx]['question']), "answer": (str(self.data[idx]['answers']['text'][0]), self.data[idx]['answers']['answer_start'][0])}
 
 # ---------------------------
 # Collator with dynamic padding and label masking
@@ -166,11 +166,16 @@ class SquadCollator:
     max_length: int = 1024
     use_reference: bool = True
     metatrain: bool = False
+    thinkend_token_id: int = None
+    
+    def __post_init__(self):
+        self.thinkend_token_id = self.tokenizer.convert_tokens_to_ids("</think>")
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         questions = [ex["question"] for ex in batch]
         evidences = [ex["evidence"] for ex in batch]
-        answers = [ex["answer"] for ex in batch]
+        answers = [ex["answer"][0] for ex in batch]
+        # answer_starts = [ex["answer"][1] for ex in batch]
            
         evidence_enc = self.tokenizer(
             evidences,
@@ -192,12 +197,14 @@ class SquadCollator:
         answer_ids = answer_enc["input_ids"]
         answer_attention_mask = answer_enc["attention_mask"]
 
-        if self.metatrain:
+        if self.metatrain:            
             messages = [[
                 {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
                 {"role": "user", "content": f"Please answer the following question: {question}"},
-                {"role": "assistant", "content": f"{answer}"}
+                {"role": "assistant", "content": f"<think>I know the answer because I have read something about this.</think>\n{answer}"}
             ] for question, answer in zip(questions, answers)]
+            
+        # Need update to add thinking token
         elif self.use_reference:
             messages = [[
                 {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
@@ -208,12 +215,13 @@ class SquadCollator:
         else:
             messages = [[
                 {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
-                {"role": "user", "content": f"Please answer the following question: {question}"}
+                {"role": "user", "content": f"Please answer the following question: {question}"},
+                {"role": "assistant", "content": f"<think>I know the answer because I have read something about this.</think>\n"}
             ] for question in questions]
 
         input_enc = self.tokenizer.apply_chat_template(
                 messages,
-                add_generation_prompt=True,   # adds the assistant turn start
+                add_generation_prompt=True if (not self.metatrain and self.use_reference) else False,   # adds the assistant turn start
                 tokenize=True,
                 return_tensors="pt",
                 padding=True,
@@ -223,7 +231,44 @@ class SquadCollator:
             )
         input_ids = input_enc["input_ids"]
         input_attention_mask = input_enc["attention_mask"]
-        labels = input_ids.clone()
+        labels = None
+        if self.metatrain:
+            labels = input_ids.clone()
+            for i, id in enumerate(input_ids):
+                for j in range(len(id) - 1, -1, -1):
+                    if id[j].item() == self.thinkend_token_id:
+                        labels[i, :j+2] = -100
+                        break
+        elif not self.use_reference:
+            input_ids = input_ids[:, :-2]
+            input_attention_mask = input_attention_mask[:, :-2]
+        
+        # tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0])
+        # for i, t in enumerate(tokens):
+        #     print(f"{i}: {t}")
+        # exit()
+        
+        # # Debug print for the first item
+        # first_input_ids = input_ids[0]
+        # first_labels = labels[0]
+        # first_input_text = self.tokenizer.decode(first_input_ids, skip_special_tokens=False)
+        # print("\n=== First input sentence (meta-train mode) ===")
+        # print(first_input_text)
+        # tokens = self.tokenizer.convert_ids_to_tokens(first_input_ids)
+        # print("\n=== Tokens, labels, and corresponding words ===")
+        # for i, (tok, lab) in enumerate(zip(tokens, first_labels.tolist())):
+        # # for i, tok in enumerate(tokens):
+        #     # decode the token alone to see its text segment
+        #     word_piece = self.tokenizer.decode(
+        #         [self.tokenizer.convert_tokens_to_ids(tok)],
+        #         skip_special_tokens=True,
+        #         clean_up_tokenization_spaces=False,
+        #     )
+        #     # show both raw token, decoded string, and label
+        #     # print(f"{tok:<20} | {word_piece:<15} | mask={input_attention_mask[0][i]}")
+        #     print(f"{tok:<20} | {word_piece:<15} | label={lab} | mask={input_attention_mask[0][i]}")
+        # exit()
+                
         return {
             "evidence": evidences,
             "evidence_ids": evidence_ids,

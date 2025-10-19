@@ -67,18 +67,230 @@ from utils.myddp import (
     barrier,
 )
 from utils.myinit import _resolve_device, _import_class
-
 from collections import OrderedDict
+from typing import Optional, Union, Mapping, Sequence
 
 logger = get_logger("metalora")
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 @torch.no_grad()
-def evaluate(metanetwork_ddp_or_module, dataloader, device, use_amp: bool = False, use_metanet: bool = True) -> Dict[str, float]:
+def generate_stepwise(
+    model,
+    tokenizer,
+    input_ids: torch.LongTensor,                     # [1, T]
+    labels: Optional[torch.LongTensor] = None,  # [1, T]
+    attention_mask: Optional[torch.LongTensor] = None,
+    max_new_tokens: int = 128,
+    eos_token_id: Optional[Union[int, List[int]]] = None,
+    do_sample: bool = False,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+    top_k: int = 0,
+    repetition_penalty: float = 1.0,
+    # metanet extras (ignored by plain HF models)
+    loradict=None,
+    ignore_mem_token: Optional[bool] = True,
+    # amp
+    use_amp: bool = False,
+    device: Optional[torch.device] = None,
+):
+    """
+    Yields a dict per decoding step:
+      {
+        'step': int,
+        'chosen_id': int,
+        'chosen_token': str,
+        'chosen_prob': float,
+        'top5': List[{'id': int, 'token': str, 'prob': float}],
+        'all_ids': torch.LongTensor,  # current full sequence [T_prompt + t]
+      }
+    The 'top5' list is computed from the *effective* distribution used to choose the token.
+    """
+    model_was_training = model.training
+    model.eval()
+
+    if device is None:
+        device = input_ids.device
+    if attention_mask is None:
+        attention_mask = torch.ones_like(input_ids, device=device)
+    if eos_token_id is None:
+        eos_token_id = tokenizer.eos_token_id
+    eos_set = set(eos_token_id if isinstance(eos_token_id, (list, tuple)) else [eos_token_id])
+
+    # Flip cache on for fast incremental decoding
+    _old_cache = getattr(getattr(model, "config", object()), "use_cache", None)
+    if hasattr(model, "config"):
+        try:
+            model.config.use_cache = True
+        except Exception:
+            pass
+
+    generated = input_ids.clone()   # [1, T]
+    if generated.dim() != 2 or generated.size(0) != 1:
+        raise ValueError("Please pass input_ids of shape [1, T].")
+
+    if attention_mask.dim() != 2 or attention_mask.size(0) != 1:
+        raise ValueError("Please pass attention_mask of shape [1, T].")
+
+    past_key_values = None
+    amp_ctx = (
+        torch.amp.autocast(device_type=str(device.type))
+        if (use_amp and device.type in ("cuda", "mps"))
+        else torch.amp.autocast(enabled=False, device_type=str(device))
+    )
+
+    def apply_repetition_penalty_(
+        logits: torch.Tensor, seen_ids: List[int], penalty: float
+    ):
+        if penalty == 1.0 or len(seen_ids) == 0:
+            return
+        # Simple version: divide logits of seen tokens by penalty
+        # (works well enough; more sophisticated versions treat positive vs negative logits differently)
+        unique = torch.unique(torch.tensor(seen_ids, device=logits.device))
+        logits[unique] = logits[unique] / penalty
+
+    def effective_probs(
+        last_logits: torch.Tensor,    # [V]
+        seen_ids: List[int],
+        temperature: float,
+        top_k: int,
+        top_p: float,
+        repetition_penalty: float,
+    ) -> torch.Tensor:
+        """Return renormalized probabilities after temp/rep-penalty/top-k/top-p."""
+        logits = last_logits.clone()
+
+        # repetition penalty
+        apply_repetition_penalty_(logits, seen_ids, repetition_penalty)
+
+        # temperature
+        if temperature and temperature > 0.0:
+            logits = logits / temperature
+        else:
+            # treat 0/None as greedy: very low temp approximates argmax
+            # still produce a valid prob distribution
+            pass
+
+        # Top-k: keep only k largest logits (before softmax)
+        if top_k and top_k > 0 and top_k < logits.numel():
+            kth_vals, kth_idx = torch.topk(logits, k=top_k)
+            mask = torch.full_like(logits, float("-inf"))
+            mask[kth_idx] = kth_vals
+            logits = mask
+
+        # Softmax first to get probs (we'll nucleus-mask on probs)
+        probs = torch.softmax(logits, dim=-1)
+
+        # Top-p (nucleus): keep smallest set with cumulative prob >= p
+        if 0.0 < top_p < 1.0:
+            sorted_probs, sorted_idx = torch.sort(probs, descending=True)
+            cumsum = torch.cumsum(sorted_probs, dim=-1)
+            # keep up to and including the first index where cumsum > top_p
+            cut_idx = torch.searchsorted(cumsum, torch.tensor(top_p, device=probs.device), right=True)
+            keep = sorted_idx[:cut_idx + 1]
+            # zero everything else, then renormalize
+            masked = torch.zeros_like(probs)
+            masked[keep] = probs[keep]
+            s = masked.sum()
+            if s.item() > 0:
+                probs = masked / s
+
+        return probs
+
+    # Prime the cache with the full prompt
+    with amp_ctx:
+        kwargs = dict(input_ids=generated, attention_mask=attention_mask)
+        kwargs["labels"] = labels
+        if loradict is not None:
+            kwargs["loradict"] = loradict
+        if ignore_mem_token is not None:
+            kwargs["ignore_mem_token"] = ignore_mem_token
+        out = model(**kwargs)
+        logits = out.logits                    # [1, T, V]
+        past_key_values = getattr(out, "past_key_values", None)
+
+    # step-by-step decode
+    for step in range(1, max_new_tokens + 1):
+        last_logits = logits[:, -1, :].squeeze(0)   # [V]
+        seen = generated[0].tolist()
+
+        # Build effective distribution AFTER all knobs
+        probs = effective_probs(
+            last_logits, seen_ids=seen, temperature=temperature,
+            top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty
+        )
+
+        # Top-5 from the effective distribution
+        k = min(5, probs.numel())
+        top5_probs, top5_ids = torch.topk(probs, k=k, dim=-1)
+        top5_list = []
+        for pid, p in zip(top5_ids.tolist(), top5_probs.tolist()):
+            tok = tokenizer.decode([pid], skip_special_tokens=False)
+            top5_list.append({"id": pid, "token": tok, "prob": float(p)})
+
+        # Choose next token
+        if do_sample:
+            # sample from effective distribution
+            next_token_id = int(torch.multinomial(probs, num_samples=1).item())
+            chosen_prob = float(probs[next_token_id].item())
+        else:
+            # greedy from effective distribution (equivalent to argmax of adjusted logits)
+            next_token_id = int(top5_ids[0].item())
+            chosen_prob = float(top5_probs[0].item())
+
+        next_token = torch.tensor([[next_token_id]], device=device, dtype=generated.dtype)
+        generated = torch.cat([generated, next_token], dim=1)
+        attention_mask = torch.cat([attention_mask, torch.ones_like(next_token)], dim=1)
+
+        res_dict = {
+            "step": step, 
+            "chosen_id": next_token_id,
+            "chosen_token": tokenizer.decode([next_token_id], skip_special_tokens=False),
+            "chosen_prob": chosen_prob,
+            "top5": top5_list,
+        }
+        # for i in res_dict.items():
+        #     print(f"{i[0]}: {i[1]}")
+
+        if next_token_id in eos_set:
+            break
+
+        # next incremental forward with pkv
+        with amp_ctx:
+            kwargs = dict(
+                input_ids=next_token,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                labels=labels,
+            )
+            if loradict is not None:
+                kwargs["loradict"] = loradict
+            if ignore_mem_token is not None:
+                kwargs["ignore_mem_token"] = ignore_mem_token
+            out = model(**kwargs)
+            logits = out.logits
+            past_key_values = getattr(out, "past_key_values", past_key_values)
+
+    # restore flags
+    if _old_cache is not None and hasattr(model, "config"):
+        try:
+            model.config.use_cache = _old_cache
+        except Exception:
+            pass
+    if model_was_training:
+        model.train()
+    
+    return generated
+
+@torch.no_grad()
+def evaluate(metanetwork_ddp_or_module, dataloader, device, use_amp: bool = False, use_metanet: bool = True, metalora: Optional[torch.Tensor] = None) -> Dict[str, float]:
     # Handle both wrapped and unwrapped metanetwork
     metanet = metanetwork_ddp_or_module.module if isinstance(metanetwork_ddp_or_module, DDP) else metanetwork_ddp_or_module
     metanet.eval()
-    
+
+    if use_metanet:
+        assert metalora is not None, "metalora cannot be None when use_metanet is True"
+
     total_loss = 0.0
     n_tokens = 0
     if use_amp and device.type == "cuda":
@@ -89,11 +301,15 @@ def evaluate(metanetwork_ddp_or_module, dataloader, device, use_amp: bool = Fals
 
     for batch in dataloader:
         input_ids = batch["input_ids"].to(device, non_blocking=True)
-        attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
+        input_attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
+        evidence_ids = batch["evidence_ids"].to(device, non_blocking=True)
+        evidence_attention_mask = batch["evidence_attention_mask"].to(device, non_blocking=True)
 
         with scaler_ctx():
-            outputs = metanet(input_ids=input_ids, attention_mask=attention_mask, labels=labels, use_metanet=use_metanet)
+            outputs = metanet(input_ids=input_ids, input_attention_mask=input_attention_mask, 
+                              evidence_ids=evidence_ids, evidence_attention_mask=evidence_attention_mask, 
+                              labels=labels, use_metanet=use_metanet, metalora=metalora)
             loss = outputs.loss
 
         valid_tokens = (labels != -100).sum().item()
@@ -110,11 +326,78 @@ def evaluate(metanetwork_ddp_or_module, dataloader, device, use_amp: bool = Fals
     avg_loss = total_loss / max(n_tokens, 1)
     ppl = math.exp(avg_loss) if avg_loss < 20 else float("inf")
 
+
+    # batch = next(iter(test_loader))
+    # evidence_ids = batch["evidence_ids"].to(device, non_blocking=True)
+    # evidence_attention_mask = batch["evidence_attention_mask"].to(device, non_blocking=True)
+    # input_ids = batch["input_ids"].to(device, non_blocking=True)
+    # input_attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
+    # ground_truths = batch["answers"]
+    # questions = batch["questions"]
+    # loradict = metanet.generate_lora_dict(input_ids=evidence_ids, attention_mask=evidence_attention_mask)
+    # gen_out = metanet.metamodel.generate(
+    #     input_ids=input_ids,
+    #     attention_mask=input_attention_mask,
+    #     loradict=loradict,
+    #     ignore_mem_token=True,
+    #     max_new_tokens=1000,
+    #     do_sample=False,
+    #     # **gen_kwargs,
+        
+    #     # return_dict_in_generate=True,
+    #     # output_scores=True
+    # )
+    # full_text = tokenizer.decode(gen_out[0], skip_special_tokens=True)
+    # if is_main_process():
+    #     print(full_text)
+    #     print("ground truth: " + ground_truths[0])
+    #     print("######################################################")
+    
+    # if is_main_process():
+    #     batch = next(iter(dataloader))
+    #     evidence_ids = batch["evidence_ids"].to(device, non_blocking=True)[0]
+    #     evidence_attention_mask = batch["evidence_attention_mask"].to(device, non_blocking=True)[0]
+    #     input_ids = batch["input_ids"].to(device, non_blocking=True)[0]
+    #     input = tokenizer.decode(input_ids)
+    #     input_attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)[0]
+    #     thinkend_token_id = tokenizer.convert_tokens_to_ids("</think>")
+    #     for j in range(len(input_ids) - 1, -1, -1):
+    #         if input_ids[j].item() == thinkend_token_id:
+    #             input_ids = input_ids[:j+2]
+    #             input_attention_mask = input_attention_mask[:j+2]
+    #             break
+    #     ground_truth = batch["answers"][0]
+    #     question = batch["questions"][0]
+    #     if use_metanet:
+    #         loradict = metanet.generate_lora_dict(evidence_ids=evidence_ids.unsqueeze(0), evidence_attention_mask=evidence_attention_mask.unsqueeze(0))
+    #     else:
+    #         loradict = None
+    #     print("generate_stepwise##############################################")
+    #     gen_out = generate_stepwise(
+    #         metanet.metamodel,
+    #         tokenizer,
+    #         input_ids=input_ids.unsqueeze(0),
+    #         attention_mask=input_attention_mask.unsqueeze(0),
+    #         loradict=loradict,
+    #         ignore_mem_token=True,
+    #         max_new_tokens=1000,
+    #         do_sample=False,
+    #         use_amp=use_amp,
+    #     )
+    #     full_text = tokenizer.decode(gen_out[0], skip_special_tokens=False)
+    #     print("######################################################")
+    #     print(input)
+    #     print("######################################################")
+    #     print(full_text)
+    #     print("ground truth: " + ground_truth)
+    #     print("######################################################")
+    # dist.barrier()
+
     metanet.train()
     return {"eval_loss": avg_loss, "perplexity": ppl}
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="base")
+@hydra.main(version_base=None, config_path="configs")
 def main(cfg: DictConfig):
     # ========= DDP init (safe for single-process) =========
     ddp_init_if_needed()
@@ -141,18 +424,11 @@ def main(cfg: DictConfig):
 
     if cfg.metanetwork.type == "transformer":
         tmp_model = MetaModelCls.from_pretrained(cfg.model.model_from, config=config)
-        assert tmp_model.lora_params_numel(cfg.model.lora_r) % (cfg.hidden_size * cfg.num_layers) == 0, \
+        lora_numel = tmp_model.lora_params_numel(cfg.model.lora_r)
+        assert lora_numel % (cfg.hidden_size * cfg.num_layers) == 0, \
             "For transformer metanetwork, num_mem_token must be set to model.lora_params_numel(lora_r) / (hidden_size * num_layers)"
         config.num_mem_token = tmp_model.lora_params_numel(cfg.model.lora_r) // (cfg.hidden_size * cfg.num_layers)
         cfg.num_mem_token = config.num_mem_token
-        if is_main_process():
-            print(tmp_model)
-            print()
-            for n, p in tmp_model.named_parameters():
-                print(f"{n}: {p.numel()}, {p.requires_grad}")
-            print()
-            print("num mem token: ", config.num_mem_token)
-            exit()
         del tmp_model
         if is_main_process():
             logger.info(f"Using transformer metanetwork, set num_mem_token to {config.num_mem_token}")
@@ -187,8 +463,11 @@ def main(cfg: DictConfig):
         # Load model & tokenizer
         if is_main_process():
             logger.info(f"Resume mode, loading from {resume_dir}...")
-        metanetwork = load_checkpoint(metanetwork, resume_dir, device)
+        metanetwork, metalora = load_checkpoint(metanetwork, resume_dir, device)
         resume_state = load_training_state(resume_dir)
+    else:
+        # Initialize metalora
+        metalora = metanetwork.metamodel.init_lora_dict(cfg.model.lora_r, scale=cfg.metanetwork.transformer_cfg.scale, device=device)
         
     metanetwork.metamodel.config.use_cache = False
 
@@ -205,6 +484,26 @@ def main(cfg: DictConfig):
         ddp_metanet = metanetwork  # no wrapping in single-process run
 
     # Optimizer & Scheduler
+    def iter_learnable_tensors(tree, prefix="root"):
+        """Yield leaf tensors with requires_grad=True from nested dict/list/tuple, 
+        and print non-leaf tensor info."""
+        if isinstance(tree, Mapping):
+            for k, v in tree.items():
+                yield from iter_learnable_tensors(v, prefix=f"{prefix}.{k}")
+        elif isinstance(tree, Sequence) and not isinstance(tree, (str, bytes)):
+            for i, v in enumerate(tree):
+                yield from iter_learnable_tensors(v, prefix=f"{prefix}[{i}]")
+        elif torch.is_tensor(tree):
+            if tree.requires_grad:
+                if tree.is_leaf:
+                    yield tree
+                else:
+                    print(f"⚠️ Non-leaf tensor at path '{prefix}': "
+                        f"shape={tuple(tree.shape)}, "
+                        f"grad_fn={tree.grad_fn}")
+                    # optionally still yield it or raise
+                    raise ValueError(f"Found non-leaf tensor at '{prefix}'")
+    # else: ignore other types
     if is_main_process():
         logger.info("Setting up optimizer & scheduler...")
     no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight", "norm.weight", "norm1", "norm2"]
@@ -217,6 +516,10 @@ def main(cfg: DictConfig):
             "params": [p for n, p in ddp_metanet.named_parameters() if (any(nd in n for nd in no_decay) and not n.startswith("module.metamodel"))],
             "weight_decay": 0.0,
         },
+        {
+            "params": iter_learnable_tensors(metalora),
+            "weight_decay": cfg.optim.weight_decay,
+        }
         # mem_tokens are already part of metanetwork's parameters
     ]  
     
@@ -334,12 +637,16 @@ def main(cfg: DictConfig):
                     lr_scheduler.step()
                 continue
             input_ids = batch["input_ids"].to(device, non_blocking=True)
-            attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
+            input_attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
             labels = batch["labels"].to(device, non_blocking=True)
+            evidence_ids = batch["evidence_ids"].to(device, non_blocking=True)
+            evidence_attention_mask = batch["evidence_attention_mask"].to(device, non_blocking=True)
 
             with torch.amp.autocast(enabled=(cfg.run.use_fp16 and device.type == "cuda"), device_type=str(device)):
                 # Forward through possibly DDP-wrapped metanetwork
-                outputs = ddp_metanet(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                outputs = ddp_metanet(input_ids=input_ids, input_attention_mask=input_attention_mask, 
+                                      evidence_ids=evidence_ids, evidence_attention_mask=evidence_attention_mask, 
+                                      labels=labels, metalora=metalora)
                 loss = outputs.loss / max(1, cfg.run.gradient_accumulation_steps)
 
             if writer is not None:
@@ -354,7 +661,7 @@ def main(cfg: DictConfig):
             epoch_tokens += valid_tokens
             tmp_tokens += valid_tokens
 
-            if step % max(1, cfg.run.gradient_accumulation_steps) == 0:
+            if step % max(1, cfg.run.gradient_accumulation_steps) == 0 or step == len(train_loader):
                 if cfg.optim.grad_clip_norm and cfg.optim.grad_clip_norm > 0:
                     scaler.unscale_(optimizer)
                     for group in optimizer.param_groups:
@@ -401,6 +708,7 @@ def main(cfg: DictConfig):
                             ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
                             ckpt_dir,
                             extra_state={"global_step": global_step},
+                            metalora=metalora,
                         )
                         save_training_state(
                             ckpt_dir,
@@ -414,33 +722,33 @@ def main(cfg: DictConfig):
 
                 # ---- Eval + best checkpoint ----
                 if getattr(cfg.eval, "eval_steps", 0) and global_step % cfg.eval.eval_steps == 0:
-                    eval_metrics = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16)
+                    eval_metrics = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16, metalora=metalora)
                     if writer is not None:
                         writer.add_scalar("eval/loss", eval_metrics["eval_loss"], global_step)
                         writer.add_scalar("eval/ppl", eval_metrics["perplexity"], global_step)
                     if is_main_process():
                         logger.info(f"[Eval @ step {global_step}] loss={eval_metrics['eval_loss']:.4f} ppl={eval_metrics['perplexity']:.2f}")
 
-                    # Best checkpoint saving on rank 0
-                    if getattr(cfg.save, "save_best", True) and is_main_process():
-                        if eval_metrics["eval_loss"] < best_eval_loss:
-                            best_eval_loss = eval_metrics["eval_loss"]
-                            best_dir = os.path.join(ckpt_root, "best")
-                            logger.info(f"New best model! Saving to {best_dir}")
-                            save_checkpoint(
-                                ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
-                                best_dir,
-                                extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss},
-                            )
-                            save_training_state(
-                                best_dir,
-                                global_step,
-                                epoch,
-                                step,
-                                best_eval_loss,
-                            )
-                    if ddp_is_active():
-                        dist.barrier()
+                    # # Best checkpoint saving on rank 0
+                    # if getattr(cfg.save, "save_best", True) and is_main_process():
+                    #     if eval_metrics["eval_loss"] < best_eval_loss:
+                    #         best_eval_loss = eval_metrics["eval_loss"]
+                    #         best_dir = os.path.join(ckpt_root, "best")
+                    #         logger.info(f"New best model! Saving to {best_dir}")
+                    #         save_checkpoint(
+                    #             ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
+                    #             best_dir,
+                    #             extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss},
+                    #         )
+                    #         save_training_state(
+                    #             best_dir,
+                    #             global_step,
+                    #             epoch,
+                    #             step,
+                    #             best_eval_loss,
+                    #         )
+                    # if ddp_is_active():
+                    #     dist.barrier()
         
         if device.type == "cuda":
             torch.cuda.empty_cache()
@@ -451,7 +759,7 @@ def main(cfg: DictConfig):
         if is_main_process():
             logger.info(f"Epoch {epoch} done. train_loss={avg_epoch_loss_world:.4f} train_ppl={epoch_ppl:.2f}")
 
-        eval_metrics = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16)
+        eval_metrics = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16, metalora=metalora)
         if writer is not None:
             writer.add_scalar("eval/loss", eval_metrics["eval_loss"], global_step)
             writer.add_scalar("eval/ppl", eval_metrics["perplexity"], global_step)
@@ -467,6 +775,7 @@ def main(cfg: DictConfig):
                     ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
                     best_dir,
                     extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss},
+                    metalora=metalora,
                 )
                 save_training_state(
                     best_dir,
@@ -483,7 +792,7 @@ def main(cfg: DictConfig):
         init_eval_without_metanetwork = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16, use_metanet=False)
         if is_main_process():
             logger.info(f"[without lora] loss={init_eval_without_metanetwork['eval_loss']:.4f} ppl={init_eval_without_metanetwork['perplexity']:.2f}")
-    init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16)
+    init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16, metalora=metalora)
     if writer is not None:
         writer.add_scalar("eval/loss", init_eval["eval_loss"], global_step)
         writer.add_scalar("eval/ppl", init_eval["perplexity"], global_step)
@@ -502,6 +811,7 @@ def main(cfg: DictConfig):
             ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
             final_dir,
             extra_state={"global_step": global_step},
+            metalora=metalora,
         )
 
         if cfg.paths.output_dir:
@@ -511,6 +821,7 @@ def main(cfg: DictConfig):
                 ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
                 stable_out,
                 extra_state={"global_step": global_step},
+                metalora=metalora,
             )
             logger.info(f"Model saved to {stable_out}")
 
