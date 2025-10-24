@@ -467,8 +467,20 @@ def main(cfg: DictConfig):
         metanetwork, metalora = load_checkpoint(metanetwork, resume_dir, device)
         resume_state = load_training_state(resume_dir)
     else:
-        # Initialize metalora
-        metalora = metanetwork.metamodel.init_lora_dict(cfg.model.lora_r, scale=cfg.metanetwork.transformer_cfg.scale, device=device)
+        if cfg.mode == "train":
+            try:
+                pretrain_dir = os.path.join(hydra_run_dir, "checkpoints", "pretrain")
+                pretrain_dir = get_latest_checkpoint(pretrain_dir)
+                metanetwork, metalora = load_checkpoint(metanetwork, pretrain_dir, device)
+                if is_main_process():
+                    logger.info("Loaded metanetwork from pretrain checkpoint.")
+            except Exception as e:
+                if is_main_process():
+                    logger.info("No pretrain checkpoint found, initializing metanetwork from scratch.")
+                metalora = metanetwork.metamodel.init_lora_dict(cfg.model.lora_r, scale=cfg.metanetwork.transformer_cfg.scale, device=device)
+        else:
+            # Initialize metalora
+            metalora = metanetwork.metamodel.init_lora_dict(cfg.model.lora_r, scale=cfg.metanetwork.transformer_cfg.scale, device=device)
         
     metanetwork.metamodel.config.use_cache = False
 
@@ -486,7 +498,7 @@ def main(cfg: DictConfig):
 
     # Optimizer & Scheduler
     def iter_learnable_tensors(tree, prefix="root"):
-        """Yield leaf tensors with requires_grad=True from nested dict/list/tuple, 
+        """Yield leaf te nsors with requires_grad=True from nested dict/list/tuple, 
         and print non-leaf tensor info."""
         if isinstance(tree, Mapping):
             for k, v in tree.items():

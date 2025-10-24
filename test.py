@@ -274,7 +274,7 @@ def main(cfg: DictConfig):
     
     # Training loop scaffolding
     hydra_run_dir = os.getcwd()
-    ckpt_root = os.path.join(hydra_run_dir, "checkpoints")
+    ckpt_root = os.path.join(hydra_run_dir, "checkpoints", "train")
     
     if cfg.test_global_step == "latest":
         resume_dir = get_latest_checkpoint(ckpt_root)
@@ -411,15 +411,7 @@ def main(cfg: DictConfig):
         # Make sure all ranks see the directory
         if ddp_is_active():
             dist.barrier()
-
-        # ===== Generate answers on this split and save to JSON (DDP-safe) =====
-        # local_results = test(cfg, metanetwork, tokenizer, test_loader, use_metanet=True, use_amp=cfg.run.use_fp16, device=device, metalora=metalora)
-        # gather_and_save(local_results, ".json")
-        # local_results_no_metanet = test(cfg, metanetwork, tokenizer, test_loader_no_metanet, use_metanet=False, use_amp=cfg.run.use_fp16, device=device)
-        # gather_and_save(local_results_no_metanet, "_no_metanet.json")
-        local_results_only_question = test(cfg, metanetwork, tokenizer, test_loader_only_question, use_metanet=False, use_amp=cfg.run.use_fp16, device=device)
-        gather_and_save(local_results_only_question, "_only_question.json")
-        
+            
         def gather_and_save(local_results, output_suffix):
             # Gather results across ranks (if distributed), then write once on rank 0
             if ddp_is_active():
@@ -436,12 +428,20 @@ def main(cfg: DictConfig):
             if is_main_process():
                 out_dir = os.path.join(cfg.test.save_path, cfg.test.source)
                 os.makedirs(out_dir, exist_ok=True)
-                out_path = os.path.join(out_dir, f"{names[i]}", f"{output_suffix}")
-                with open(out_path.replace(".json", f"{output_suffix}"), "w", encoding="utf-8") as f:
+                out_path = os.path.join(out_dir, f"{names[i]}{output_suffix}")
+                with open(out_path, "w", encoding="utf-8") as f:
                     json.dump(merged, f, ensure_ascii=False, indent=2)
                 logger.info(f"Saved {len(merged)} predictions to {out_path}")
-        
 
+        # ===== Generate answers on this split and save to JSON (DDP-safe) =====
+        # local_results = test(cfg, metanetwork, tokenizer, test_loader, use_metanet=True, use_amp=cfg.run.use_fp16, device=device, metalora=metalora)
+        # gather_and_save(local_results, ".json")
+        # local_results_no_metanet = test(cfg, metanetwork, tokenizer, test_loader_no_metanet, use_metanet=False, use_amp=cfg.run.use_fp16, device=device)
+        # gather_and_save(local_results_no_metanet, "_no_metanet.json")
+        local_results_only_question = test(cfg, metanetwork, tokenizer, test_loader_only_question, use_metanet=False, use_amp=cfg.run.use_fp16, device=device)
+        gather_and_save(local_results_only_question, "_only_question.json")
+        
+        
         # # Gather results across ranks (if distributed), then write once on rank 0
         # if ddp_is_active():
         #     gathered = [None for _ in range(get_world_size())]

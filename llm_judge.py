@@ -175,8 +175,8 @@ async def amain(cfg: DictConfig):
     client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     sem = asyncio.Semaphore(max(1, cfg.test.max_concurrency))
 
-    # suffixes = [".json", "_no_metanet.json", "_only_question.json"]
-    suffixes = [".json", "_no_metanet.json"]
+    suffixes = [".json", "_no_metanet.json", "_only_question.json"]
+    # suffixes = [".json", "_no_metanet.json"]
     for name in names:
         for suffix in suffixes:
             json_path = os.path.join(load_dir, f"{name}{suffix}")
