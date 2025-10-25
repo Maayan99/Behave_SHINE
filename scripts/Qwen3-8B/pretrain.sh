@@ -32,7 +32,7 @@ export OMP_NUM_THREADS=4
 export NCCL_DEBUG=WARN
 export TORCH_DISTRIBUTED_DEBUG=INFO
 
-nohup torchrun \
+torchrun \
     --nproc_per_node=$NUM_GPUS \
     --nnodes=1 \
     --node_rank=0 \
@@ -45,4 +45,4 @@ nohup torchrun \
     data.train_batch_size=$TRAIN_BATCH_SIZE \
     data.eval_batch_size=$TEST_BATCH_SIZE \
     run.gradient_accumulation_steps=$GRADIENT_ACCUMULATION_STEPS \
-    > tmp_pretrain.txt 2>&1 &
+    > tmp_pretrain.txt 2>&1
