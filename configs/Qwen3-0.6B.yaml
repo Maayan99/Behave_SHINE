@@ -8,6 +8,7 @@ run:
   use_fp16: false              # set false to disable AMP, or use bf16 if you extend it
   gradient_accumulation_steps: 2
   device: cuda                # auto | cuda | cpu
+  use_gradient_checkpoint: false # conflict with torch.compile
 
 paths:
   model_path: "./models/Qwen3-0.6B"
@@ -32,10 +33,10 @@ logging:
   logging_steps: 1
 
 eval:
-  eval_steps: 1000
+  eval_steps: 1000000
 
 save:
-  save_steps: 1000
+  save_steps: 1000000
   # save_best: true    # best files sometimes corrupted, disable for now
 
 # If you use a custom local module for LoRA-wrapped Qwen, keep it here.

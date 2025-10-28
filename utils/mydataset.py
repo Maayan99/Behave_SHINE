@@ -91,20 +91,20 @@ class PretrainCollator:
 
         evidence_enc = self.tokenizer(
             texts,
-            padding=True,
             max_length=self.max_length,
             truncation=True,
             return_tensors="pt",
+            padding="max_length",
         )
         evidence_ids = evidence_enc["input_ids"]
         evidence_attention_mask = evidence_enc["attention_mask"]
         
         answer_enc = self.tokenizer(
             texts,
-            padding=True,
             max_length=self.max_length,
             truncation=True,
             return_tensors="pt",
+            padding="max_length",
         )
         answer_ids = answer_enc["input_ids"]
         answer_attention_mask = answer_enc["attention_mask"]
@@ -136,10 +136,10 @@ class PretrainCollator:
                 add_generation_prompt=True if (not self.metatrain and self.use_reference) else False,   # adds the assistant turn start
                 tokenize=True,
                 return_tensors="pt",
-                padding=True,
-                max_length=self.max_length,
+                max_length=self.max_length + 2 if not self.metatrain and not self.use_reference else self.max_length,
                 truncation=True,
                 return_dict=True,
+                padding="max_length",
             )
         input_ids = input_enc["input_ids"]
         input_attention_mask = input_enc["attention_mask"]
@@ -299,20 +299,20 @@ class SquadCollator:
            
         evidence_enc = self.tokenizer(
             evidences,
-            padding=True,
             max_length=self.max_length,
             truncation=True,
             return_tensors="pt",
+            padding="max_length",
         )
         evidence_ids = evidence_enc["input_ids"]
         evidence_attention_mask = evidence_enc["attention_mask"]
         
         answer_enc = self.tokenizer(
             answers,
-            padding=True,
             max_length=self.max_length,
             truncation=True,
             return_tensors="pt",
+            padding="max_length",
         )
         answer_ids = answer_enc["input_ids"]
         answer_attention_mask = answer_enc["attention_mask"]
@@ -347,10 +347,10 @@ class SquadCollator:
                 add_generation_prompt=True if (not self.metatrain and (self.use_reference or self.only_question)) else False,   # adds the assistant turn start
                 tokenize=True,
                 return_tensors="pt",
-                padding=True,
-                max_length=self.max_length,
+                max_length=self.max_length + 2 if not self.metatrain and not self.use_reference and not self.only_question else self.max_length,
                 truncation=True,
                 return_dict=True,
+                padding="max_length",
             )
         input_ids = input_enc["input_ids"]
         input_attention_mask = input_enc["attention_mask"]

@@ -8,13 +8,14 @@ run:
   use_fp16: false              # set false to disable AMP, or use bf16 if you extend it
   gradient_accumulation_steps: 8
   device: cuda                # auto | cuda | cpu
+  use_gradient_checkpoint: true # conflict with torch.compile
 
 paths:
   model_path: "./models/Qwen3-8B"
   output_dir: "qwen-finetuned"   # final save; checkpoints go under Hydra's run dir unless overridden
 
 data:
-  max_length: 768
+  max_length: 768 # 896
   train_batch_size: 1
   eval_batch_size: 2
   num_workers: 4

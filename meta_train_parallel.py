@@ -73,214 +73,214 @@ from typing import Optional, Union, Mapping, Sequence
 logger = get_logger("metalora")
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-@torch.no_grad()
-def generate_stepwise(
-    model,
-    tokenizer,
-    input_ids: torch.LongTensor,                     # [1, T]
-    labels: Optional[torch.LongTensor] = None,  # [1, T]
-    attention_mask: Optional[torch.LongTensor] = None,
-    max_new_tokens: int = 128,
-    eos_token_id: Optional[Union[int, List[int]]] = None,
-    do_sample: bool = False,
-    temperature: float = 1.0,
-    top_p: float = 1.0,
-    top_k: int = 0,
-    repetition_penalty: float = 1.0,
-    # metanet extras (ignored by plain HF models)
-    loradict=None,
-    ignore_mem_token: Optional[bool] = True,
-    # amp
-    use_amp: bool = False,
-    device: Optional[torch.device] = None,
-):
-    """
-    Yields a dict per decoding step:
-      {
-        'step': int,
-        'chosen_id': int,
-        'chosen_token': str,
-        'chosen_prob': float,
-        'top5': List[{'id': int, 'token': str, 'prob': float}],
-        'all_ids': torch.LongTensor,  # current full sequence [T_prompt + t]
-      }
-    The 'top5' list is computed from the *effective* distribution used to choose the token.
-    """
-    model_was_training = model.training
-    model.eval()
+# @torch.no_grad()
+# def generate_stepwise(
+#     model,
+#     tokenizer,
+#     input_ids: torch.LongTensor,                     # [1, T]
+#     labels: Optional[torch.LongTensor] = None,  # [1, T]
+#     attention_mask: Optional[torch.LongTensor] = None,
+#     max_new_tokens: int = 128,
+#     eos_token_id: Optional[Union[int, List[int]]] = None,
+#     do_sample: bool = False,
+#     temperature: float = 1.0,
+#     top_p: float = 1.0,
+#     top_k: int = 0,
+#     repetition_penalty: float = 1.0,
+#     # metanet extras (ignored by plain HF models)
+#     loradict=None,
+#     ignore_mem_token: Optional[bool] = True,
+#     # amp
+#     use_amp: bool = False,
+#     device: Optional[torch.device] = None,
+# ):
+#     """
+#     Yields a dict per decoding step:
+#       {
+#         'step': int,
+#         'chosen_id': int,
+#         'chosen_token': str,
+#         'chosen_prob': float,
+#         'top5': List[{'id': int, 'token': str, 'prob': float}],
+#         'all_ids': torch.LongTensor,  # current full sequence [T_prompt + t]
+#       }
+#     The 'top5' list is computed from the *effective* distribution used to choose the token.
+#     """
+#     model_was_training = model.training
+#     model.eval()
 
-    if device is None:
-        device = input_ids.device
-    if attention_mask is None:
-        attention_mask = torch.ones_like(input_ids, device=device)
-    if eos_token_id is None:
-        eos_token_id = tokenizer.eos_token_id
-    eos_set = set(eos_token_id if isinstance(eos_token_id, (list, tuple)) else [eos_token_id])
+#     if device is None:
+#         device = input_ids.device
+#     if attention_mask is None:
+#         attention_mask = torch.ones_like(input_ids, device=device)
+#     if eos_token_id is None:
+#         eos_token_id = tokenizer.eos_token_id
+#     eos_set = set(eos_token_id if isinstance(eos_token_id, (list, tuple)) else [eos_token_id])
 
-    # Flip cache on for fast incremental decoding
-    _old_cache = getattr(getattr(model, "config", object()), "use_cache", None)
-    if hasattr(model, "config"):
-        try:
-            model.config.use_cache = True
-        except Exception:
-            pass
+#     # Flip cache on for fast incremental decoding
+#     _old_cache = getattr(getattr(model, "config", object()), "use_cache", None)
+#     if hasattr(model, "config"):
+#         try:
+#             model.config.use_cache = True
+#         except Exception:
+#             pass
 
-    generated = input_ids.clone()   # [1, T]
-    if generated.dim() != 2 or generated.size(0) != 1:
-        raise ValueError("Please pass input_ids of shape [1, T].")
+#     generated = input_ids.clone()   # [1, T]
+#     if generated.dim() != 2 or generated.size(0) != 1:
+#         raise ValueError("Please pass input_ids of shape [1, T].")
 
-    if attention_mask.dim() != 2 or attention_mask.size(0) != 1:
-        raise ValueError("Please pass attention_mask of shape [1, T].")
+#     if attention_mask.dim() != 2 or attention_mask.size(0) != 1:
+#         raise ValueError("Please pass attention_mask of shape [1, T].")
 
-    past_key_values = None
-    amp_ctx = (
-        torch.amp.autocast(device_type=str(device.type))
-        if (use_amp and device.type in ("cuda", "mps"))
-        else torch.amp.autocast(enabled=False, device_type=str(device))
-    )
+#     past_key_values = None
+#     amp_ctx = (
+#         torch.amp.autocast(device_type=str(device.type))
+#         if (use_amp and device.type in ("cuda", "mps"))
+#         else torch.amp.autocast(enabled=False, device_type=str(device))
+#     )
 
-    def apply_repetition_penalty_(
-        logits: torch.Tensor, seen_ids: List[int], penalty: float
-    ):
-        if penalty == 1.0 or len(seen_ids) == 0:
-            return
-        # Simple version: divide logits of seen tokens by penalty
-        # (works well enough; more sophisticated versions treat positive vs negative logits differently)
-        unique = torch.unique(torch.tensor(seen_ids, device=logits.device))
-        logits[unique] = logits[unique] / penalty
+#     def apply_repetition_penalty_(
+#         logits: torch.Tensor, seen_ids: List[int], penalty: float
+#     ):
+#         if penalty == 1.0 or len(seen_ids) == 0:
+#             return
+#         # Simple version: divide logits of seen tokens by penalty
+#         # (works well enough; more sophisticated versions treat positive vs negative logits differently)
+#         unique = torch.unique(torch.tensor(seen_ids, device=logits.device))
+#         logits[unique] = logits[unique] / penalty
 
-    def effective_probs(
-        last_logits: torch.Tensor,    # [V]
-        seen_ids: List[int],
-        temperature: float,
-        top_k: int,
-        top_p: float,
-        repetition_penalty: float,
-    ) -> torch.Tensor:
-        """Return renormalized probabilities after temp/rep-penalty/top-k/top-p."""
-        logits = last_logits.clone()
+#     def effective_probs(
+#         last_logits: torch.Tensor,    # [V]
+#         seen_ids: List[int],
+#         temperature: float,
+#         top_k: int,
+#         top_p: float,
+#         repetition_penalty: float,
+#     ) -> torch.Tensor:
+#         """Return renormalized probabilities after temp/rep-penalty/top-k/top-p."""
+#         logits = last_logits.clone()
 
-        # repetition penalty
-        apply_repetition_penalty_(logits, seen_ids, repetition_penalty)
+#         # repetition penalty
+#         apply_repetition_penalty_(logits, seen_ids, repetition_penalty)
 
-        # temperature
-        if temperature and temperature > 0.0:
-            logits = logits / temperature
-        else:
-            # treat 0/None as greedy: very low temp approximates argmax
-            # still produce a valid prob distribution
-            pass
+#         # temperature
+#         if temperature and temperature > 0.0:
+#             logits = logits / temperature
+#         else:
+#             # treat 0/None as greedy: very low temp approximates argmax
+#             # still produce a valid prob distribution
+#             pass
 
-        # Top-k: keep only k largest logits (before softmax)
-        if top_k and top_k > 0 and top_k < logits.numel():
-            kth_vals, kth_idx = torch.topk(logits, k=top_k)
-            mask = torch.full_like(logits, float("-inf"))
-            mask[kth_idx] = kth_vals
-            logits = mask
+#         # Top-k: keep only k largest logits (before softmax)
+#         if top_k and top_k > 0 and top_k < logits.numel():
+#             kth_vals, kth_idx = torch.topk(logits, k=top_k)
+#             mask = torch.full_like(logits, float("-inf"))
+#             mask[kth_idx] = kth_vals
+#             logits = mask
 
-        # Softmax first to get probs (we'll nucleus-mask on probs)
-        probs = torch.softmax(logits, dim=-1)
+#         # Softmax first to get probs (we'll nucleus-mask on probs)
+#         probs = torch.softmax(logits, dim=-1)
 
-        # Top-p (nucleus): keep smallest set with cumulative prob >= p
-        if 0.0 < top_p < 1.0:
-            sorted_probs, sorted_idx = torch.sort(probs, descending=True)
-            cumsum = torch.cumsum(sorted_probs, dim=-1)
-            # keep up to and including the first index where cumsum > top_p
-            cut_idx = torch.searchsorted(cumsum, torch.tensor(top_p, device=probs.device), right=True)
-            keep = sorted_idx[:cut_idx + 1]
-            # zero everything else, then renormalize
-            masked = torch.zeros_like(probs)
-            masked[keep] = probs[keep]
-            s = masked.sum()
-            if s.item() > 0:
-                probs = masked / s
+#         # Top-p (nucleus): keep smallest set with cumulative prob >= p
+#         if 0.0 < top_p < 1.0:
+#             sorted_probs, sorted_idx = torch.sort(probs, descending=True)
+#             cumsum = torch.cumsum(sorted_probs, dim=-1)
+#             # keep up to and including the first index where cumsum > top_p
+#             cut_idx = torch.searchsorted(cumsum, torch.tensor(top_p, device=probs.device), right=True)
+#             keep = sorted_idx[:cut_idx + 1]
+#             # zero everything else, then renormalize
+#             masked = torch.zeros_like(probs)
+#             masked[keep] = probs[keep]
+#             s = masked.sum()
+#             if s.item() > 0:
+#                 probs = masked / s
 
-        return probs
+#         return probs
 
-    # Prime the cache with the full prompt
-    with amp_ctx:
-        kwargs = dict(input_ids=generated, attention_mask=attention_mask)
-        kwargs["labels"] = labels
-        if loradict is not None:
-            kwargs["loradict"] = loradict
-        if ignore_mem_token is not None:
-            kwargs["ignore_mem_token"] = ignore_mem_token
-        out = model(**kwargs)
-        logits = out.logits                    # [1, T, V]
-        past_key_values = getattr(out, "past_key_values", None)
+#     # Prime the cache with the full prompt
+#     with amp_ctx:
+#         kwargs = dict(input_ids=generated, attention_mask=attention_mask)
+#         kwargs["labels"] = labels
+#         if loradict is not None:
+#             kwargs["loradict"] = loradict
+#         if ignore_mem_token is not None:
+#             kwargs["ignore_mem_token"] = ignore_mem_token
+#         out = model(**kwargs)
+#         logits = out.logits                    # [1, T, V]
+#         past_key_values = getattr(out, "past_key_values", None)
 
-    # step-by-step decode
-    for step in range(1, max_new_tokens + 1):
-        last_logits = logits[:, -1, :].squeeze(0)   # [V]
-        seen = generated[0].tolist()
+#     # step-by-step decode
+#     for step in range(1, max_new_tokens + 1):
+#         last_logits = logits[:, -1, :].squeeze(0)   # [V]
+#         seen = generated[0].tolist()
 
-        # Build effective distribution AFTER all knobs
-        probs = effective_probs(
-            last_logits, seen_ids=seen, temperature=temperature,
-            top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty
-        )
+#         # Build effective distribution AFTER all knobs
+#         probs = effective_probs(
+#             last_logits, seen_ids=seen, temperature=temperature,
+#             top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty
+#         )
 
-        # Top-5 from the effective distribution
-        k = min(5, probs.numel())
-        top5_probs, top5_ids = torch.topk(probs, k=k, dim=-1)
-        top5_list = []
-        for pid, p in zip(top5_ids.tolist(), top5_probs.tolist()):
-            tok = tokenizer.decode([pid], skip_special_tokens=False)
-            top5_list.append({"id": pid, "token": tok, "prob": float(p)})
+#         # Top-5 from the effective distribution
+#         k = min(5, probs.numel())
+#         top5_probs, top5_ids = torch.topk(probs, k=k, dim=-1)
+#         top5_list = []
+#         for pid, p in zip(top5_ids.tolist(), top5_probs.tolist()):
+#             tok = tokenizer.decode([pid], skip_special_tokens=False)
+#             top5_list.append({"id": pid, "token": tok, "prob": float(p)})
 
-        # Choose next token
-        if do_sample:
-            # sample from effective distribution
-            next_token_id = int(torch.multinomial(probs, num_samples=1).item())
-            chosen_prob = float(probs[next_token_id].item())
-        else:
-            # greedy from effective distribution (equivalent to argmax of adjusted logits)
-            next_token_id = int(top5_ids[0].item())
-            chosen_prob = float(top5_probs[0].item())
+#         # Choose next token
+#         if do_sample:
+#             # sample from effective distribution
+#             next_token_id = int(torch.multinomial(probs, num_samples=1).item())
+#             chosen_prob = float(probs[next_token_id].item())
+#         else:
+#             # greedy from effective distribution (equivalent to argmax of adjusted logits)
+#             next_token_id = int(top5_ids[0].item())
+#             chosen_prob = float(top5_probs[0].item())
 
-        next_token = torch.tensor([[next_token_id]], device=device, dtype=generated.dtype)
-        generated = torch.cat([generated, next_token], dim=1)
-        attention_mask = torch.cat([attention_mask, torch.ones_like(next_token)], dim=1)
+#         next_token = torch.tensor([[next_token_id]], device=device, dtype=generated.dtype)
+#         generated = torch.cat([generated, next_token], dim=1)
+#         attention_mask = torch.cat([attention_mask, torch.ones_like(next_token)], dim=1)
 
-        res_dict = {
-            "step": step, 
-            "chosen_id": next_token_id,
-            "chosen_token": tokenizer.decode([next_token_id], skip_special_tokens=False),
-            "chosen_prob": chosen_prob,
-            "top5": top5_list,
-        }
-        # for i in res_dict.items():
-        #     print(f"{i[0]}: {i[1]}")
+#         res_dict = {
+#             "step": step, 
+#             "chosen_id": next_token_id,
+#             "chosen_token": tokenizer.decode([next_token_id], skip_special_tokens=False),
+#             "chosen_prob": chosen_prob,
+#             "top5": top5_list,
+#         }
+#         # for i in res_dict.items():
+#         #     print(f"{i[0]}: {i[1]}")
 
-        if next_token_id in eos_set:
-            break
+#         if next_token_id in eos_set:
+#             break
 
-        # next incremental forward with pkv
-        with amp_ctx:
-            kwargs = dict(
-                input_ids=next_token,
-                attention_mask=attention_mask,
-                past_key_values=past_key_values,
-                labels=labels,
-            )
-            if loradict is not None:
-                kwargs["loradict"] = loradict
-            if ignore_mem_token is not None:
-                kwargs["ignore_mem_token"] = ignore_mem_token
-            out = model(**kwargs)
-            logits = out.logits
-            past_key_values = getattr(out, "past_key_values", past_key_values)
+#         # next incremental forward with pkv
+#         with amp_ctx:
+#             kwargs = dict(
+#                 input_ids=next_token,
+#                 attention_mask=attention_mask,
+#                 past_key_values=past_key_values,
+#                 labels=labels,
+#             )
+#             if loradict is not None:
+#                 kwargs["loradict"] = loradict
+#             if ignore_mem_token is not None:
+#                 kwargs["ignore_mem_token"] = ignore_mem_token
+#             out = model(**kwargs)
+#             logits = out.logits
+#             past_key_values = getattr(out, "past_key_values", past_key_values)
 
-    # restore flags
-    if _old_cache is not None and hasattr(model, "config"):
-        try:
-            model.config.use_cache = _old_cache
-        except Exception:
-            pass
-    if model_was_training:
-        model.train()
+#     # restore flags
+#     if _old_cache is not None and hasattr(model, "config"):
+#         try:
+#             model.config.use_cache = _old_cache
+#         except Exception:
+#             pass
+#     if model_was_training:
+#         model.train()
     
-    return generated
+#     return generated
 
 @torch.no_grad()
 def evaluate(metanetwork_ddp_or_module, dataloader, device, use_amp: bool = False, use_metanet: bool = True, metalora: Optional[torch.Tensor] = None) -> Dict[str, float]:
@@ -401,6 +401,8 @@ def evaluate(metanetwork_ddp_or_module, dataloader, device, use_amp: bool = Fals
 def main(cfg: DictConfig):
     # ========= DDP init (safe for single-process) =========
     ddp_init_if_needed()
+    
+    torch.set_float32_matmul_precision('high')
 
     if is_main_process():
         logger.info("Resolved config:")
@@ -658,7 +660,7 @@ def main(cfg: DictConfig):
                 # Forward through possibly DDP-wrapped metanetwork
                 outputs = ddp_metanet(input_ids=input_ids, input_attention_mask=input_attention_mask, 
                                       evidence_ids=evidence_ids, evidence_attention_mask=evidence_attention_mask, 
-                                      labels=labels, metalora=metalora)
+                                      labels=labels, metalora=metalora, use_gradient_checkpoint=cfg.run.use_gradient_checkpoint)
                 loss = outputs.loss / max(1, cfg.run.gradient_accumulation_steps)
 
             if writer is not None:
@@ -799,17 +801,17 @@ def main(cfg: DictConfig):
         if ddp_is_active():
             dist.barrier()
     
-    # Initial eval
-    if resume_dir is None:
-        init_eval_without_metanetwork = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16, use_metanet=False)
-        if is_main_process():
-            logger.info(f"[without lora] loss={init_eval_without_metanetwork['eval_loss']:.4f} ppl={init_eval_without_metanetwork['perplexity']:.2f}")
-    init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16, metalora=metalora)
-    if writer is not None:
-        writer.add_scalar("eval/loss", init_eval["eval_loss"], global_step)
-        writer.add_scalar("eval/ppl", init_eval["perplexity"], global_step)
-    if is_main_process():
-        logger.info(f"[Eval @ step {global_step}] loss={init_eval['eval_loss']:.4f} ppl={init_eval['perplexity']:.2f}")
+    # # Initial eval
+    # if resume_dir is None:
+    #     init_eval_without_metanetwork = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16, use_metanet=False)
+    #     if is_main_process():
+    #         logger.info(f"[without lora] loss={init_eval_without_metanetwork['eval_loss']:.4f} ppl={init_eval_without_metanetwork['perplexity']:.2f}")
+    # init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_fp16, metalora=metalora)
+    # if writer is not None:
+    #     writer.add_scalar("eval/loss", init_eval["eval_loss"], global_step)
+    #     writer.add_scalar("eval/ppl", init_eval["perplexity"], global_step)
+    # if is_main_process():
+    #     logger.info(f"[Eval @ step {global_step}] loss={init_eval['eval_loss']:.4f} ppl={init_eval['perplexity']:.2f}")
 
     # Main training epochs
     for epoch in range(1, cfg.optim.num_epochs + 1):

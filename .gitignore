@@ -11,3 +11,9 @@ nohup.out
 qwen-finetuned
 test
 results
+meta_train_debug.py
+meta_train_parallel_compare.py
+metanetwork_family_new.py
+scripts/Qwen3-0.6B/pretrain_debug.sh
+cache_transmla.py
+debug.py

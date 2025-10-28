@@ -27,6 +27,7 @@ from torch import nn
 from torch import Tensor
 from transformers.models.qwen3.modeling_qwen3 import ACT2FN, Cache, DynamicCache, GenerationMixin, use_kernel_forward_from_hub, create_causal_mask, create_sliding_window_causal_mask, FlashAttentionKwargs, GenericForQuestionAnswering, GenericForSequenceClassification, GenericForTokenClassification, GradientCheckpointingLayer, BaseModelOutputWithPast, CausalLMOutputWithPast, ROPE_INIT_FUNCTIONS, dynamic_rope_update, ALL_ATTENTION_FUNCTIONS, PreTrainedModel, Unpack, TransformersKwargs, auto_docstring, can_return_tuple, deprecate_kwarg, check_model_inputs, Qwen3Config, Qwen3RMSNorm, Qwen3MLP, Qwen3Attention, apply_rotary_pos_emb, eager_attention_forward, Qwen3RotaryEmbedding
 from math import sqrt
+from torch.utils.checkpoint import checkpoint
 
 class LoraLinear(nn.Linear):
     def __init__(self, in_features, out_features, bias = True, device=None, dtype=None):
@@ -381,6 +382,7 @@ class LoraQwen3Model(Qwen3PreTrainedModel):
         cache_position: Optional[torch.LongTensor] = None,
         loradict: Optional[dict] = None,
         ignore_mem_token: bool = False, 
+        use_gradient_checkpoint: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
         r"""
@@ -390,6 +392,9 @@ class LoraQwen3Model(Qwen3PreTrainedModel):
         ignore_mem_token (`bool`, *optional*, defaults to `False`):
             Whether to ignore the memory tokens during the forward pass. If set to `True`, the memory tokens will not be
             used, and the model will behave like a standard transformer without memory tokens. 
+        use_gradient_checkpoint (`bool`, *optional*, defaults to `False`):
+            Whether to use gradient checkpointing to save memory during training. If set to `True`, the model will
+            recompute certain activations during the backward pass instead of storing them in memory.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -439,20 +444,49 @@ class LoraQwen3Model(Qwen3PreTrainedModel):
 
         if self.use_mem_token and not ignore_mem_token:
             memory_states = torch.zeros((hidden_states.shape[0], self.config.num_hidden_layers, self.num_mem_token, self.config.hidden_size)).to(self.device)
+            
         for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            hidden_states = decoder_layer(
-                hidden_states,
-                attention_mask=causal_mask_mapping[decoder_layer.attention_type],
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                position_embeddings=position_embeddings,
-                loradict=loradict[i] if isinstance(loradict, dict) else None,
-                **kwargs,
-            )
+            if use_gradient_checkpoint:
+                hidden_states = checkpoint(
+                    decoder_layer, 
+                    hidden_states,
+                    attention_mask=causal_mask_mapping[decoder_layer.attention_type],
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
+                    loradict=loradict[i] if isinstance(loradict, dict) else None,
+                    **kwargs,
+                    use_reentrant=False)
+            else:
+                hidden_states =  decoder_layer(
+                    hidden_states,
+                    attention_mask=causal_mask_mapping[decoder_layer.attention_type],
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
+                    loradict=loradict[i] if isinstance(loradict, dict) else None,
+                    **kwargs,
+                )
             if self.use_mem_token and not ignore_mem_token:
                 memory_states[:, i, :, :] = hidden_states[:, -self.num_mem_token:].to(self.device)
+        # for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+        #     hidden_states = decoder_layer(
+        #         hidden_states,
+        #         attention_mask=causal_mask_mapping[decoder_layer.attention_type],
+        #         position_ids=position_ids,
+        #         past_key_values=past_key_values,
+        #         use_cache=use_cache,
+        #         cache_position=cache_position,
+        #         position_embeddings=position_embeddings,
+        #         loradict=loradict[i] if isinstance(loradict, dict) else None,
+        #         **kwargs,
+        #     )
+        #     if self.use_mem_token and not ignore_mem_token:
+        #         memory_states[:, i, :, :] = hidden_states[:, -self.num_mem_token:].to(self.device)
 
         if self.use_mem_token and not ignore_mem_token:
             hidden_states = hidden_states[:, :-self.num_mem_token, :]
@@ -526,6 +560,7 @@ class LoraQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         loradict: Optional[dict] = None,
         ignore_mem_token: bool = False,
+        use_gradient_checkpoint: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> CausalLMOutputWithPast:
         r"""
@@ -539,6 +574,9 @@ class LoraQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         ignore_mem_token (`bool`, *optional*, defaults to `False`):
             Whether to ignore the memory tokens during the forward pass. If set to `True`, the memory tokens will not be
             used, and the model will behave like a standard transformer without memory tokens. 
+        use_gradient_checkpoint (`bool`, *optional*, defaults to `False`):
+            Whether to use gradient checkpointing to save memory during training. If set to `True`, the model will
+            recompute certain activations during the backward pass instead of storing them in memory.
 
         Example:
         ```python
@@ -577,6 +615,7 @@ class LoraQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             cache_position=cache_position,
             loradict=loradict,
             ignore_mem_token=ignore_mem_token,
+            use_gradient_checkpoint=use_gradient_checkpoint,
             **kwargs,
         )
 
