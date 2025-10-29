@@ -18,6 +18,7 @@ SOURCE=transmla
 TRAIN_BATCH_SIZE=1
 TEST_BATCH_SIZE=2
 GRADIENT_ACCUMULATION_STEPS=4
+USE_GRADIENT_CHECKPOINT=False
 
 # Find available port
 while true; do
@@ -45,4 +46,5 @@ torchrun \
     data.train_batch_size=$TRAIN_BATCH_SIZE \
     data.eval_batch_size=$TEST_BATCH_SIZE \
     run.gradient_accumulation_steps=$GRADIENT_ACCUMULATION_STEPS \
+    run.use_gradient_checkpoint=$USE_GRADIENT_CHECKPOINT \
     > tmp_pretrain.txt 2>&1

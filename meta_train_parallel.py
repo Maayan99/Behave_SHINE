@@ -73,6 +73,7 @@ from typing import Optional, Union, Mapping, Sequence
 logger = get_logger("metalora")
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+
 # @torch.no_grad()
 # def generate_stepwise(
 #     model,
@@ -399,11 +400,14 @@ def evaluate(metanetwork_ddp_or_module, dataloader, device, use_amp: bool = Fals
 
 @hydra.main(version_base=None, config_path="configs")
 def main(cfg: DictConfig):
+    
+    torch.set_float32_matmul_precision('high')
+    if cfg.run.use_gradient_checkpoint: 
+        torch._dynamo.config.optimize_ddp = False
+    
     # ========= DDP init (safe for single-process) =========
     ddp_init_if_needed()
     
-    torch.set_float32_matmul_precision('high')
-
     if is_main_process():
         logger.info("Resolved config:")
         logger.info(f"\n\n{OmegaConf.to_yaml(cfg, resolve=True)}")

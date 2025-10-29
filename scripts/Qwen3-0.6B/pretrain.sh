@@ -18,6 +18,7 @@ SOURCE=transmla
 TRAIN_BATCH_SIZE=1
 TEST_BATCH_SIZE=2
 GRADIENT_ACCUMULATION_STEPS=4
+USE_GRADIENT_CHECKPOINT=True
 
 # Find available port
 while true; do
@@ -38,11 +39,12 @@ torchrun \
     --node_rank=0 \
     --master_addr="127.0.0.1" \
     --master_port=$MASTER_PORT \
-    meta_train_parallel_liger.py \
+    meta_train_parallel.py \
     --config-name $CONFIG_NAME \
     mode=pretrain \
     data.source=$SOURCE \
     data.train_batch_size=$TRAIN_BATCH_SIZE \
     data.eval_batch_size=$TEST_BATCH_SIZE \
     run.gradient_accumulation_steps=$GRADIENT_ACCUMULATION_STEPS \
+    run.use_gradient_checkpoint=$USE_GRADIENT_CHECKPOINT \
     # > tmp_pretrain.txt 2>&1 &
