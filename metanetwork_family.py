@@ -68,6 +68,11 @@ class Metanetwork(nn.Module):
             self.scale = cfg.metanetwork.transformer_cfg.scale
         else:
             raise ValueError(f"Unknown metanetwork type: {cfg.metanetwork.type}")
+        
+    @property
+    def config(self):
+        # Prefer live inner config if present; else fall back to cached copy
+        return getattr(self.metamodel, "config", None)
 
     @torch.compile # (mode="max-autotune")
     def forward(self, input_ids, input_attention_mask, evidence_ids, evidence_attention_mask, metalora = None, labels = None, use_metanet = True, use_gradient_checkpoint = False, **kwargs) -> dict:

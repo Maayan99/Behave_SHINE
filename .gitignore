@@ -17,3 +17,7 @@ metanetwork_family_new.py
 scripts/Qwen3-0.6B/pretrain_debug.sh
 cache_transmla.py
 debug.py
+LoraQwen_liger.py
+configs/deepspeed.json
+meta_train_parallel_liger.py
+scripts/Qwen3-0.6B/deepspeed.sh
