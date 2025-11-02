@@ -41,36 +41,46 @@ def compute_f1(a_gold, a_pred):
 	return f1
 
 def main(args):
-	with open(args.input, 'r') as f:
-		data_list = json.load(f)
-	for data in data_list:
-		gold_answers = data['answer']
-		if not isinstance(gold_answers, list):
-			gold_answers = [gold_answers]
-		gold_answers = [str(a) for a in gold_answers]
-		output = data['output']
-		try:
-			# extract the text between '[output_begin] ... [output_end]'
-			# pattern = re.compile(r'\[output_begin\](.*)\[output_end\]')
-			# search_results = pattern.search(output)
-			# if search_results:
-			# 	output = search_results.group(1)
-			# else:
-			# 	pred_answer = output
-			pred_answer = output
-		except AttributeError:
-			pred_answer = ''
-		exact_scores = max(compute_exact(a, pred_answer) for a in gold_answers)
-		f1_scores = max(compute_f1(a, pred_answer) for a in gold_answers)
-		# print(f'gold: {gold_answers}, pred: {pred_answer}, exact: {exact_scores}, f1: {f1_scores}')
-		data['prediction'] = pred_answer
-		data['scores'] = {
-			'exact': exact_scores,
-			'f1': f1_scores,
-		}
-	Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-	with open(args.output, 'w') as f:
-		json.dump(data_list, f, indent=2)
+    all_em = []
+    all_f1 = []
+    with open(args.input, 'r') as f:
+        data_list = json.load(f)
+    for data in data_list:
+        gold_answers = data["ground_truth"]
+        if not isinstance(gold_answers, list):
+            gold_answers = [gold_answers]
+        gold_answers = [str(a) for a in gold_answers]
+        output = data['answer']
+        try:
+            # extract the text between '[output_begin] ... [output_end]'
+            # pattern = re.compile(r'\[output_begin\](.*)\[output_end\]')
+            # search_results = pattern.search(output)
+            # if search_results:
+            # 	output = search_results.group(1)
+            # else:
+            # 	pred_answer = output
+            pred_answer = output
+        except AttributeError:
+            pred_answer = ''
+        exact_scores = max(compute_exact(a, pred_answer) for a in gold_answers)
+        f1_scores = max(compute_f1(a, pred_answer) for a in gold_answers)
+        # print(f'gold: {gold_answers}, pred: {pred_answer}, exact: {exact_scores}, f1: {f1_scores}')
+        data['scores'] = {
+            'exact': exact_scores,
+            'f1': f1_scores,
+        }
+        all_em.append(exact_scores)
+        all_f1.append(f1_scores)
+    overall_em = 100.0 * sum(all_em) / len(all_em) if all_em else 0.0
+    overall_f1 = 100.0 * sum(all_f1) / len(all_f1) if all_f1 else 0.0
+    print(f'Overall Exact Match: {overall_em:.2f}, Overall F1: {overall_f1:.2f}')
+    data_list.append({
+        'Overall Exact Match': overall_em,
+        'Overall F1': overall_f1,
+    })
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    with open(args.output, 'w') as f:
+        json.dump(data_list, f, indent=2)
 
 if __name__ == '__main__':
 	import argparse
