@@ -19,6 +19,7 @@ TRAIN_BATCH_SIZE=1
 TEST_BATCH_SIZE=2
 GRADIENT_ACCUMULATION_STEPS=16
 USE_GRADIENT_CHECKPOINT=False
+RESUME_GLOBAL_STEP=latest   # -1: don't resume,   int: resume from global steps,  latest: resume from latest
 
 # Find available port
 while true; do
@@ -47,4 +48,5 @@ nohup torchrun \
     data.eval_batch_size=$TEST_BATCH_SIZE \
     run.gradient_accumulation_steps=$GRADIENT_ACCUMULATION_STEPS \
     run.use_gradient_checkpoint=$USE_GRADIENT_CHECKPOINT \
+    resume_global_step=$RESUME_GLOBAL_STEP \
     > tmp_pretrain.txt 2>&1 &
