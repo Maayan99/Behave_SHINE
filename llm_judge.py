@@ -3,6 +3,7 @@ from omegaconf import DictConfig
 import asyncio
 import os
 import json
+import random
 from openai import AsyncOpenAI
 from openai import APIError, RateLimitError, APITimeoutError
 from typing import Any, Dict, List
@@ -102,7 +103,7 @@ async def process_sample(
                 client=client,
                 model=model,
                 question=sample[i]["question"],
-                answer=sample[i]["answer"],
+                answer=str(random.choice(sample[i]["answer"])),
                 ground_truth=sample[i]["ground_truth"],
                 sem=sem,
                 max_retries=max_retries,

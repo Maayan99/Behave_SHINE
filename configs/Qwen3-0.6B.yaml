@@ -69,7 +69,7 @@ test:
   source: squad
   max_new_tokens: 1024
   save_path: test
-  batch_size: 4
+  batch_size: 16
   num_workers: 4 
   judger_model: gpt-4.1-nano
   max_concurrency: 32

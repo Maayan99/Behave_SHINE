@@ -11,6 +11,7 @@ from sklearn.model_selection import train_test_split
 from torch.utils.tensorboard import SummaryWriter
 from metanetwork_family import Metanetwork
 
+import random
 
 # ---------------------------
 # Mock dataset for demo
@@ -70,7 +71,7 @@ class SquadDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx) -> Dict[str, Any]:
-        return {"evidence": str(self.data[idx]['context']), "question": str(self.data[idx]['question']), "answer": (str(self.data[idx]['answers']['text'][0]), self.data[idx]['answers']['answer_start'][0])}
+        return {"evidence": str(self.data[idx]['context']), "question": str(self.data[idx]['question']), "answer": self.data[idx]['answers']['text']}
 
 # ---------------------------
 # Collator with dynamic padding and label masking
@@ -294,8 +295,8 @@ class SquadCollator:
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         questions = [ex["question"] for ex in batch]
         evidences = [ex["evidence"] for ex in batch]
-        answers = [ex["answer"][0] for ex in batch]
-        # answer_starts = [ex["answer"][1] for ex in batch]
+        answers = [str(random.choice(ex["answer"])) for ex in batch]
+        full_answers = [ex["answer"] for ex in batch]
            
         evidence_enc = self.tokenizer(
             evidences,
@@ -326,9 +327,7 @@ class SquadCollator:
         elif self.use_reference:
             messages = [[
                 {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
-                {"role": "user", "content": "Please review the following reference materials."},
-                {"role": "user", "content": f"{evidence}"},
-                {"role": "user", "content": f"Based on the above, answer this question: {question}"}
+                {"role": "user", "content": f"Please review the following reference materials.\n\nReference:\n{evidence}\n\nBased on the reference, answer this question:\n{question}"},
             ] for evidence, question in zip(evidences, questions)]
         elif self.only_question:
             messages = [[
@@ -400,6 +399,7 @@ class SquadCollator:
             "labels": labels,
             "input_attention_mask": input_attention_mask,
             "answers": answers,
+            "full_answers": full_answers,
             "answer_ids": answer_ids,
             "answer_attention_mask": answer_attention_mask,
             "questions": questions,

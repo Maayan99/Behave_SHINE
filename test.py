@@ -70,7 +70,6 @@ from utils.myinit import _resolve_device, _import_class
 from collections import OrderedDict
 import time
 import re
-from meta_train_parallel import generate_stepwise
 
 logger = get_logger("test")
 
@@ -149,7 +148,7 @@ def test(cfg, metanetwork_ddp_or_module, tokenizer, testloader, use_metanet: boo
         # question_attention_mask = batch["question_attention_mask"].to(device, non_blocking=True)
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         input_attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
-        ground_truths = batch["answers"]
+        ground_truths = batch["full_answers"]
         questions = batch["questions"]
         labels = None if batch["labels"] is None else batch["labels"].to(device, non_blocking=True)
 
@@ -434,12 +433,12 @@ def main(cfg: DictConfig):
                 logger.info(f"Saved {len(merged)} predictions to {out_path}")
 
         # ===== Generate answers on this split and save to JSON (DDP-safe) =====
-        local_results = test(cfg, metanetwork, tokenizer, test_loader, use_metanet=True, use_amp=cfg.run.use_fp16, device=device, metalora=metalora)
-        gather_and_save(local_results, ".json")
+        # local_results = test(cfg, metanetwork, tokenizer, test_loader, use_metanet=True, use_amp=cfg.run.use_fp16, device=device, metalora=metalora)
+        # gather_and_save(local_results, ".json")
         local_results_no_metanet = test(cfg, metanetwork, tokenizer, test_loader_no_metanet, use_metanet=False, use_amp=cfg.run.use_fp16, device=device)
         gather_and_save(local_results_no_metanet, "_no_metanet.json")
-        local_results_only_question = test(cfg, metanetwork, tokenizer, test_loader_only_question, use_metanet=False, use_amp=cfg.run.use_fp16, device=device)
-        gather_and_save(local_results_only_question, "_only_question.json")
+        # local_results_only_question = test(cfg, metanetwork, tokenizer, test_loader_only_question, use_metanet=False, use_amp=cfg.run.use_fp16, device=device)
+        # gather_and_save(local_results_only_question, "_only_question.json")
         
         
         # # Gather results across ranks (if distributed), then write once on rank 0
