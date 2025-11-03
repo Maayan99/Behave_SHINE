@@ -21,7 +21,7 @@ while true; do
     if ! nc -z 127.0.0.1 $MASTER_PORT; then
         break
     fi
-    ((MASTER_PORT++))
+    MASTER_PORT=$((MASTER_PORT + 1))
 done
 
 export HYDRA_FULL_ERROR=1
@@ -29,7 +29,7 @@ export OMP_NUM_THREADS=4
 export NCCL_DEBUG=WARN
 export TORCH_DISTRIBUTED_DEBUG=INFO
 
-torchrun \
+nohup torchrun \
     --nproc_per_node=$NUM_GPUS \
     --nnodes=1 \
     --node_rank=0 \
@@ -37,4 +37,4 @@ torchrun \
     --master_port=$MASTER_PORT \
     meta_train_parallel.py \
     --config-name $CONFIG_NAME \
-    > tmp_metatrain.txt 2>&1
+    > tmp_metatrain.txt 2>&1 &

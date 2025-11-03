@@ -14,7 +14,8 @@
 NUM_GPUS=4
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-8B"       
-TEST_BATCH_SIZE=4
+TEST_BATCH_SIZE=8
+TEST_GLOBAL_STEP=2500
         
 
 # Find available port
@@ -30,7 +31,7 @@ export OMP_NUM_THREADS=4
 export NCCL_DEBUG=WARN
 export TORCH_DISTRIBUTED_DEBUG=INFO
 
-torchrun \
+nohup torchrun \
     --nproc_per_node=$NUM_GPUS \
     --nnodes=1 \
     --node_rank=0 \
@@ -39,4 +40,5 @@ torchrun \
     test.py \
     --config-name $CONFIG_NAME \
     test.batch_size=$TEST_BATCH_SIZE \
-    > tmp_test.txt 2>&1
+    test_global_step=$TEST_GLOBAL_STEP \
+    > tmp_test.txt 2>&1 &
