@@ -33,10 +33,10 @@ logging:
   logging_steps: 1
 
 eval:
-  eval_steps: 1000000
+  eval_steps: 625
 
 save:
-  save_steps: 1000000
+  save_steps: 625
   # save_best: true    # best files sometimes corrupted, disable for now
 
 # If you use a custom local module for LoRA-wrapped Qwen, keep it here.

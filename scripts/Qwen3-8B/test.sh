@@ -11,11 +11,11 @@
 #SBATCH -e test.err
 
 
-NUM_GPUS=4
+NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-8B"       
 TEST_BATCH_SIZE=8
-TEST_GLOBAL_STEP=2500
+TEST_GLOBAL_STEP=latest
         
 
 # Find available port

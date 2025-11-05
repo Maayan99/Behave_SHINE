@@ -491,6 +491,7 @@ def main(cfg: DictConfig):
     metanetwork.metamodel.config.use_cache = False
 
     # ====== Wrap ONLY the trainable module in DDP when applicable ======
+    metanetwork.to(device)
     if should_use_ddp():
         ddp_metanet = DDP(
             metanetwork,
