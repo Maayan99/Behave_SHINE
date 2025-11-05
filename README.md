@@ -23,3 +23,11 @@ hf download fxmeng/transmla_pretrain_6B_tokens --repo-type dataset --local-dir d
 hf download bigai-nlco/LooGLE --repo-type dataset --local-dir data/loogle
 hf download rajpurkar/squad --repo-type dataset --local-dir data/squad
 ```
+
+0.6B:
+reconstruction
+20% add completion
+
+8B:
+reconstruction
+10% add completion

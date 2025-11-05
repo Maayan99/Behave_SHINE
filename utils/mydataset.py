@@ -79,19 +79,50 @@ class SquadDataset(Dataset):
 @dataclass
 class PretrainCollator:
     tokenizer: Any
+    cfg: Any
     max_length: int = 1024
-    use_reference: bool = True
     metatrain: bool = False
     thinkend_token_id: int = None
     
     def __post_init__(self):
         self.thinkend_token_id = self.tokenizer.convert_tokens_to_ids("</think>")
+        self.completion_freq = self.cfg.pretrain.completion_freq
+        self.max_completion_ratio = self.cfg.pretrain.max_completion_ratio
+        self.min_completion_ratio = self.cfg.pretrain.min_completion_ratio
+    
+    def split_text(self, text):
+        t = text.split()
+        ratio = 1.0 - random.uniform(self.min_completion_ratio, self.max_completion_ratio)
+        left, right = t[:int(len(t)*ratio)], t[int(len(t)*ratio):]
+        return (' '.join(left), ' '.join(right))
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         texts = [ex["text"] for ex in batch]
 
+        if self.metatrain:            
+            t = random.random()
+            if t < self.completion_freq:
+                splits = [self.split_text(text) for text in texts]
+                evidence_texts = [split[0] for split in splits]
+                answer_texts = [split[1] for split in splits]
+                messages = [[
+                    {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
+                    {"role": "user", "content": f"Please complete what you have read."},
+                    {"role": "assistant", "content": f"<think>I know the answer because I have read something about this.</think>\n{answer}"}
+                ] for answer in answer_texts]
+            else:
+                evidence_texts = texts
+                answer_texts = texts
+                messages = [[
+                    {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
+                    {"role": "user", "content": f"Please repeat what you have read."},
+                    {"role": "assistant", "content": f"<think>I know the answer because I have read something about this.</think>\n{answer}"}
+                ] for answer in answer_texts]
+        else:
+            raise NotImplementedError("metatrain=False mode is not implemented in PretrainCollator.")
+    
         evidence_enc = self.tokenizer(
-            texts,
+            evidence_texts,
             max_length=self.max_length,
             truncation=True,
             return_tensors="pt",
@@ -99,9 +130,8 @@ class PretrainCollator:
         )
         evidence_ids = evidence_enc["input_ids"]
         evidence_attention_mask = evidence_enc["attention_mask"]
-        
         answer_enc = self.tokenizer(
-            texts,
+            answer_texts,
             max_length=self.max_length,
             truncation=True,
             return_tensors="pt",
@@ -110,34 +140,13 @@ class PretrainCollator:
         answer_ids = answer_enc["input_ids"]
         answer_attention_mask = answer_enc["attention_mask"]
 
-        if self.metatrain:            
-            messages = [[
-                {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
-                {"role": "user", "content": f"Please repeat what you have read."},
-                {"role": "assistant", "content": f"<think>I know the answer because I have read something about this.</think>\n{answer}"}
-            ] for answer in texts]
-        # Need update to add thinking token
-        elif self.use_reference:
-            raise NotImplementedError("use_reference=True is not implemented for PretrainCollator.")
-            # messages = [[
-            #     {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
-            #     {"role": "user", "content": "Please repeat what you read."},
-            #     {"role": "user", "content": f"{text}"},
-            #     {"role": "user", "content": f"Please start to repeat."}
-            # ] for text in texts]
-        else:
-            messages = [[
-                {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
-                {"role": "user", "content": f"Please repeat what you have read."},
-                {"role": "assistant", "content": f"<think>I know the answer because I have read something about this.</think>\n"}
-            ] for _ in texts]
 
         input_enc = self.tokenizer.apply_chat_template(
                 messages,
-                add_generation_prompt=True if (not self.metatrain and self.use_reference) else False,   # adds the assistant turn start
+                add_generation_prompt=False,   # adds the assistant turn start
                 tokenize=True,
                 return_tensors="pt",
-                max_length=self.max_length + 2 if not self.metatrain and not self.use_reference else self.max_length,
+                max_length=self.max_length,
                 truncation=True,
                 return_dict=True,
                 padding="max_length",
@@ -152,9 +161,6 @@ class PretrainCollator:
                     if id[j].item() == self.thinkend_token_id:
                         labels[i, :j+2] = -100
                         break
-        elif not self.use_reference:
-            input_ids = input_ids[:, :-2]
-            input_attention_mask = input_attention_mask[:, :-2]
         
         # tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0])
         # for i, t in enumerate(tokens):
@@ -164,22 +170,27 @@ class PretrainCollator:
         # # Debug print for the first item
         # first_input_ids = input_ids[0]
         # first_labels = labels[0]
+        # first_evidence_ids = evidence_ids[0]
         # first_input_text = self.tokenizer.decode(first_input_ids, skip_special_tokens=False)
+        # first_evidence_ids = [i for i in first_evidence_ids if i != self.tokenizer.pad_token_id]
+        # first_evidence_text = self.tokenizer.decode(first_evidence_ids, skip_special_tokens=False)
         # print("\n=== First input sentence (meta-train mode) ===")
         # print(first_input_text)
-        # tokens = self.tokenizer.convert_ids_to_tokens(first_input_ids)
-        # print("\n=== Tokens, labels, and corresponding words ===")
-        # for i, (tok, lab) in enumerate(zip(tokens, first_labels.tolist())):
-        # # for i, tok in enumerate(tokens):
-        #     # decode the token alone to see its text segment
-        #     word_piece = self.tokenizer.decode(
-        #         [self.tokenizer.convert_tokens_to_ids(tok)],
-        #         skip_special_tokens=True,
-        #         clean_up_tokenization_spaces=False,
-        #     )
-        #     # show both raw token, decoded string, and label
-        #     # print(f"{tok:<20} | {word_piece:<15} | mask={input_attention_mask[0][i]}")
-        #     print(f"{tok:<20} | {word_piece:<15} | label={lab} | mask={input_attention_mask[0][i]}")
+        # print("\n=== First evidence sentence (meta-train mode) ===")
+        # print(first_evidence_text)
+        # # tokens = self.tokenizer.convert_ids_to_tokens(first_input_ids)
+        # # print("\n=== Tokens, labels, and corresponding words ===")
+        # # for i, (tok, lab) in enumerate(zip(tokens, first_labels.tolist())):
+        # # # for i, tok in enumerate(tokens):
+        # #     # decode the token alone to see its text segment
+        # #     word_piece = self.tokenizer.decode(
+        # #         [self.tokenizer.convert_tokens_to_ids(tok)],
+        # #         skip_special_tokens=True,
+        # #         clean_up_tokenization_spaces=False,
+        # #     )
+        # #     # show both raw token, decoded string, and label
+        # #     # print(f"{tok:<20} | {word_piece:<15} | mask={input_attention_mask[0][i]}")
+        # #     print(f"{tok:<20} | {word_piece:<15} | label={lab} | mask={input_attention_mask[0][i]}")
         # exit()
                 
         return {

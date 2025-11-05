@@ -561,7 +561,7 @@ def main(cfg: DictConfig):
             logger.info(f"Val len: {len(val_texts)}")
         train_ds = TextDataset(train_texts["text"], tokenizer, max_length=cfg.data.max_length)
         val_ds = TextDataset(val_texts["text"], tokenizer, max_length=cfg.data.max_length)
-        collator = PretrainCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, metatrain=True)
+        collator = PretrainCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, metatrain=True, cfg=cfg)
     elif cfg.data.source == "squad":
         # features: ['id', 'title', 'context', 'question', 'answers'],
         # num_rows: 87599

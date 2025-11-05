@@ -29,6 +29,11 @@ optim:
   warmup_steps: 100
   grad_clip_norm: 0.0
 
+pretrain:
+  completion_freq: 0.5
+  max_completion_ratio: 0.5
+  min_completion_ratio: 0.01
+
 logging:
   logging_steps: 1
 
