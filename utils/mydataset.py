@@ -112,7 +112,7 @@ class PretrainCollator:
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         texts = [ex["text"] for ex in batch]
-
+        
         if self.metatrain:            
             t = random.random()
             if t < self.completion_freq:
@@ -184,14 +184,18 @@ class PretrainCollator:
                     if id[j].item() == self.thinkend_token_id:
                         labels[i, :j+2] = -100
                         break
+            # print("evidence #############\n", self.tokenizer.decode(evidence_ids[i], skip_special_tokens=False))
+            # print("origin###########\n", texts[i])
+            # print("answer #############\n", self.tokenizer.decode(answer_ids[i], skip_special_tokens=False))
+            # exit()
             assert labels[i].sum().item() != -100 * labels.size(1), "All labels are masked!"
-            if evidence_ids[i][-1].item() == self.tokenizer.pad_token_id:
-                tokens = self.tokenizer.convert_ids_to_tokens(evidence_ids[i])
-                print("evidence", evidence_texts[i])
-                print("answer", answer_texts[i])
-                for j, t in enumerate(tokens):
-                    print(f"{j}: token_ids: {t} attention_mask: {evidence_attention_mask[i][j]}")
-                exit()
+            # if evidence_ids[i][-1].item() == self.tokenizer.pad_token_id:
+            #     tokens = self.tokenizer.convert_ids_to_tokens(evidence_ids[i])
+            #     print("evidence", evidence_texts[i])
+            #     print("answer", answer_texts[i])
+            #     for j, t in enumerate(tokens):
+            #         print(f"{j}: token_ids: {t} attention_mask: {evidence_attention_mask[i][j]}")
+            #     exit()
             assert evidence_ids[i][-1].item() != self.tokenizer.pad_token_id, "Evidence evidence is all padding!"
         
         # tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0])
