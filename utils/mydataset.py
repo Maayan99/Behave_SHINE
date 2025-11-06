@@ -92,9 +92,19 @@ class PretrainCollator:
     
     def split_text(self, text):
         t = text.split()
-        ratio = 1.0 - random.uniform(self.min_completion_ratio, self.max_completion_ratio)
-        left, right = t[:int(len(t)*ratio)], t[int(len(t)*ratio):]
-        return (' '.join(left), ' '.join(right))
+        if len(t) < 2:
+            return text, "Nothing to complete."
+
+        ratio = random.uniform(self.min_completion_ratio, self.max_completion_ratio)
+        split_index = round(len(t) * ratio)
+
+        left = t[:split_index]
+        right = t[split_index:]
+
+        if not right:  # ensure right is not empty
+            left, right = t[:-1], t[-1:]
+
+        return ' '.join(left), ' '.join(right)
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         texts = [ex["text"] for ex in batch]
