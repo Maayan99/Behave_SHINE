@@ -42,7 +42,7 @@ import logging
 from torch.utils.tensorboard import SummaryWriter
 from metanetwork_family import Metanetwork
 
-from utils.mydataset import SquadDataset, SquadCollator
+from utils.mydataset import SquadDataset, SquadCollator, GroupedSquadDataset
 from utils.myseed import set_seed
 from utils.mylogging import get_logger
 from utils.mysaveload import (
@@ -72,6 +72,7 @@ import time
 import re
 
 logger = get_logger("test")
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 def extract_think_and_answer(text: str) -> Tuple[str, str]:
@@ -292,7 +293,7 @@ def main(cfg: DictConfig):
     else:
         raise ValueError(f"Invalid test_global_step: {cfg.test_global_step}")
 
-    # Load model & tokenizer
+    # Load model
     if is_main_process():
         logger.info(f"Resume mode, loading from {resume_dir}...")
     metanetwork, metalora = load_checkpoint(metanetwork, resume_dir, device)
@@ -300,54 +301,6 @@ def main(cfg: DictConfig):
     # Data
     if is_main_process():
         logger.info("Preparing data...")
-    # if cfg.test.source == "loogle":
-    #     # names = ["shortdep_qa", "shortdep_cloze", "longdep_qa", "summarization"]
-    #     names = ["shortdep_qa", "shortdep_cloze", "longdep_qa"]
-    #     datasets = []
-    #     for testset in names:
-    #         data = load_dataset(
-    #             os.path.join("bigai-nlco/LooGLE", testset),
-    #             split="test",
-    #             cache_dir=os.path.join('data', 'loogle', testset),
-    #         )
-    #         datasets.append(LoogleDataset(data, tokenizer, max_length=cfg.data.max_length))
-    #         if is_main_process():
-    #             logger.info(f"Loaded loogle/{testset} with {len(data)} samples")
-    #     collator = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=False)
-    #     collator_no_metanet = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=True)
-    # elif cfg.test.source == "easy":
-    #     names = ["0"]
-    #     for testset in names:
-    #         texts = [
-    #             "What does lewis eat every evening ?",
-    #             "What does lewis eat every morning ?",
-    #             "What is most expensive in Beijing ?",
-    #             "Why Jack refuse to see Alice ?",
-    #             "Does Jack love Alice ?",
-    #             "What's the meaning when I say I don't like it ?",
-    #         ]
-    #         answers = [
-    #             "Rice",
-    #             "Dumplings",
-    #             "Housing prices",
-    #             "Because he hates her",
-    #             "No",
-    #             "I hate it very much",
-    #         ]
-    #         evidences = [
-    #             "Lewis eats dumplings every morning and rice every evening.",
-    #             "Lewis eats dumplings every morning and rice every evening.",
-    #             "The most expensive thing in Beijing is housing prices.",
-    #             "Jack refuse to see Alice because he hates her.",
-    #             "Jack refuse to see Alice because he hates her.",
-    #             "When I say I don't like it I mean I hate it very much."
-    #         ]
-    #         data = [{"question": q, "evidence": e, "answer": a} for q, e, a in zip(texts, evidences, answers)]
-    #         datasets = [LoogleDataset(data, tokenizer, max_length=cfg.data.max_length)]
-    #         if is_main_process():
-    #             logger.info(f"Loaded easy testset with {len(data)} samples")    
-    #         collator = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=False)
-    #         collator_no_metanet = LoogleCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=True)
     if cfg.test.source == "squad":
         names = ["squad"]
         datasets = []
@@ -356,12 +309,12 @@ def main(cfg: DictConfig):
                 os.path.join("data", "squad"),
                 split="validation",
             )
-            datasets.append(SquadDataset(data, tokenizer, max_length=cfg.data.max_length))
+            datasets.append(GroupedSquadDataset(data, tokenizer, cfg.test.context_len))
             if is_main_process():
                 logger.info(f"Loaded {cfg.test.source}/{testset} with {len(data)} samples")
-        collator = SquadCollator(tokenizer=tokenizer, max_length=cfg.data.max_length)
-        collator_no_metanet = SquadCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, use_reference=True)
-        collator_only_question = SquadCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, only_question=True)
+        collator = SquadCollator(tokenizer=tokenizer, max_length=cfg.test.max_length)
+        collator_no_metanet = SquadCollator(tokenizer=tokenizer, max_length=cfg.test.max_length, use_reference=True)
+        collator_only_question = SquadCollator(tokenizer=tokenizer, max_length=cfg.test.max_length, only_question=True)
     else:
         raise ValueError(f"Unknown data source: {cfg.test.source}")
 

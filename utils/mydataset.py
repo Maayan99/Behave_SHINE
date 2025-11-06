@@ -13,6 +13,11 @@ from transformers import AutoTokenizer
 from metanetwork_family import Metanetwork
 
 import random
+from collections import defaultdict
+from typing import Optional
+import numpy as np
+
+import json
 
 # ---------------------------
 # Mock dataset for demo
@@ -50,29 +55,61 @@ class TextDataset(Dataset):
     def __getitem__(self, idx) -> Dict[str, Any]:
         return {"text": str(self.texts[idx])}
 
-# class LoogleDataset(Dataset):
-#     def __init__(self, data: List[Dict[str, Any]], tokenizer, max_length: int = 512):
-#         self.data = data
-#         self.tokenizer = tokenizer
-#         self.max_length = max_length
-
-#     def __len__(self):
-#         return len(self.data)
-
-#     def __getitem__(self, idx) -> Dict[str, Any]:
-#         return {"question": str(self.data[idx]['question']), "evidence": str(self.data[idx]['evidence']), "answer": str(self.data[idx]['answer'])}
-
 class SquadDataset(Dataset):
-    def __init__(self, data: List[Dict[str, Any]], tokenizer, max_length: int = 512):
+    def __init__(self, data: List[Dict[str, Any]], tokenizer):
         self.data = data
         self.tokenizer = tokenizer
-        self.max_length = max_length
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx) -> Dict[str, Any]:
         return {"evidence": str(self.data[idx]['context']), "question": str(self.data[idx]['question']), "answer": self.data[idx]['answers']['text']}
+
+class GroupedSquadDataset(Dataset):
+    def __init__(
+        self,
+        data: List[Dict[str, Any]],
+        tokenizer,
+        context_len: Optional[int] = None,
+        sep: str = "\n\n",
+    ):
+        self.tokenizer = tokenizer
+        self.sep = sep
+        self.context_len = context_len
+        self.data = data
+        
+        text_to_idx = defaultdict(list)
+        for i, ex in enumerate(data):
+            ctx = str(ex["context"])
+            text_to_idx[ctx].append(i)
+
+        all_context_list = list(text_to_idx.keys())
+        self.text_to_idx = text_to_idx
+        
+        if context_len is None:
+            self.groups = [[ctx] for ctx in all_context_list]
+        else:
+            num_tokens = len(self.tokenizer(self.sep.join(all_context_list))["input_ids"])
+            num_groups = (num_tokens + context_len - 1) // context_len
+            context_list_per_group = np.array_split(all_context_list, num_groups)
+            self.groups = [[str(s) for s in arr] for arr in context_list_per_group]
+            
+        self.idx_to_groupidx = {}
+        for group_idx, ctx_list in enumerate(self.groups):
+            for ctx in ctx_list:
+                for ex_idx in text_to_idx[ctx]:
+                    self.idx_to_groupidx[ex_idx] = group_idx
+                    
+        print(f"GroupedSquadDataset: {len(self.groups)} groups created from {len(data)} examples.")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx) -> Dict[str, Any]:
+        group = self.groups[self.idx_to_groupidx[idx]]
+        evidence = self.sep.join(list(random.sample(group, len(group))))
+        return {"evidence": evidence, "question": str(self.data[idx]['question']), "answer": self.data[idx]['answers']['text']}
 
 # ---------------------------
 # Collator with dynamic padding and label masking
@@ -246,91 +283,6 @@ class PretrainCollator:
             "answer_attention_mask": answer_attention_mask,
             "questions": ["Please repeat what you have read."] * len(texts),
         }
-        
-# class CausalLMDataCollator:
-#     tokenizer: Any
-#     max_length: int = 512
-
-#     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-#         texts = [ex["text"] for ex in batch]
-#         enc = self.tokenizer(
-#             texts,
-#             truncation=True,
-#             padding=True,
-#             max_length=self.max_length,
-#             return_tensors="pt",
-#         )
-#         input_ids = enc["input_ids"]
-#         attention_mask = enc["attention_mask"]
-#         labels = input_ids.clone()
-
-#         # Ensure a pad token exists
-#         if self.tokenizer.pad_token_id is None:
-#             self.tokenizer.pad_token = self.tokenizer.eos_token
-#         pad_id = self.tokenizer.pad_token_id
-#         labels[labels == pad_id] = -100
-
-#         return {
-#             "input_ids": input_ids,
-#             "attention_mask": attention_mask,
-#             "labels": labels,
-#         }
-
-# @dataclass
-# class LoogleCollator:
-#     tokenizer: Any
-#     max_length: int = 1024
-#     use_reference: bool = True
-
-#     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-#         questions = [ex["question"] for ex in batch]
-#         evidences = [ex["evidence"] for ex in batch]
-#         answers = [ex["answer"] for ex in batch]
-           
-#         evidence_enc = self.tokenizer(
-#             evidences,
-#             padding=True,
-#             max_length=self.max_length,
-#             truncation=True,
-#             return_tensors="pt",
-#         )
-#         evidence_ids = evidence_enc["input_ids"]
-#         evidence_attention_mask = evidence_enc["attention_mask"]
-        
-#         if self.use_reference:
-#             messages = [[
-#                 {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
-#                 {"role": "user", "content": "Please review the following reference materials."},
-#                 {"role": "user", "content": f"{evidence}"},
-#                 {"role": "user", "content": f"Based on the above, answer this question: {question}"}
-#             ] for evidence, question in zip(evidences, questions)]
-#         else:
-#             messages = [[
-#                 {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
-#                 {"role": "user", "content": f"Please answer the following question: {question}"}
-#             ] for question in questions]
-
-#         input_enc = self.tokenizer.apply_chat_template(
-#                 messages,
-#                 add_generation_prompt=True,   # adds the assistant turn start
-#                 tokenize=True,
-#                 return_tensors="pt",
-#                 padding=True,
-#                 max_length=self.max_length,
-#                 truncation=True,
-#                 return_dict=True,
-#             )
-#         input_ids = input_enc["input_ids"]
-#         input_attention_mask = input_enc["attention_mask"]
-#         return {
-#             "evidence": evidences,
-#             "evidence_ids": evidence_ids,
-#             "evidence_attention_mask": evidence_attention_mask,
-#             "input_ids": input_ids,
-#             "input_attention_mask": input_attention_mask,
-#             "answers": answers,
-#         }
-
 
 @dataclass
 class SquadCollator:

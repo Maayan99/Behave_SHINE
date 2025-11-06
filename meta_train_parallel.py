@@ -568,8 +568,8 @@ def main(cfg: DictConfig):
         # num_rows: 87599
         train_dataset = load_dataset(os.path.join("data", "squad"), split="train")
         val_dataset = load_dataset(os.path.join("data", "squad"), split="validation")
-        train_ds = SquadDataset(train_dataset, tokenizer, max_length=cfg.data.max_length)
-        val_ds = SquadDataset(val_dataset, tokenizer, max_length=cfg.data.max_length)
+        train_ds = SquadDataset(train_dataset, tokenizer)
+        val_ds = SquadDataset(val_dataset, tokenizer)
         collator = SquadCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, metatrain=True)
     else:
         raise ValueError(f"Unknown data source: {cfg.data.source}")
