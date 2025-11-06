@@ -9,6 +9,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from torch.utils.tensorboard import SummaryWriter
+from transformers import AutoTokenizer
 from metanetwork_family import Metanetwork
 
 import random
@@ -89,6 +90,7 @@ class PretrainCollator:
         self.completion_freq = self.cfg.pretrain.completion_freq
         self.max_completion_ratio = self.cfg.pretrain.max_completion_ratio
         self.min_completion_ratio = self.cfg.pretrain.min_completion_ratio
+        self.left_truncation_tokenizer = AutoTokenizer.from_pretrained(self.cfg.model.tokenizer_from, padding_side="left", truncation_side="left")
     
     def split_text(self, text):
         t = text.split()
@@ -132,14 +134,23 @@ class PretrainCollator:
                 ] for answer in answer_texts]
         else:
             raise NotImplementedError("metatrain=False mode is not implemented in PretrainCollator.")
-    
-        evidence_enc = self.tokenizer(
-            evidence_texts,
-            max_length=self.max_length,
-            truncation=True,
-            return_tensors="pt",
-            padding="max_length",
-        )
+
+        if t < self.completion_freq:
+            evidence_enc = self.left_truncation_tokenizer(
+                evidence_texts,
+                max_length=self.max_length,
+                truncation=True,
+                return_tensors="pt",
+                padding="max_length",
+            )
+        else:
+            evidence_enc = self.tokenizer(
+                evidence_texts,
+                max_length=self.max_length,
+                truncation=True,
+                return_tensors="pt",
+                padding="max_length",
+            )
         evidence_ids = evidence_enc["input_ids"]
         evidence_attention_mask = evidence_enc["attention_mask"]
         answer_enc = self.tokenizer(
