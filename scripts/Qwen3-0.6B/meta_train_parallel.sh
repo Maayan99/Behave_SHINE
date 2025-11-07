@@ -17,6 +17,7 @@ CONFIG_NAME="Qwen3-0.6B"
 NUM_EPOCHS=3
 EVAL_STEPS=1000
 SAVE_STEPS=1000 
+USE_GRADIENT_CHECKPOINT=False
 
 # Find available port
 while true; do
@@ -39,6 +40,7 @@ nohup torchrun \
     --master_port=$MASTER_PORT \
     meta_train_parallel.py \
     --config-name $CONFIG_NAME \
+    run.use_gradient_checkpoint=$USE_GRADIENT_CHECKPOINT \
     optim.num_epochs=$NUM_EPOCHS \
     eval.eval_steps=$EVAL_STEPS \
     save.save_steps=$SAVE_STEPS \
