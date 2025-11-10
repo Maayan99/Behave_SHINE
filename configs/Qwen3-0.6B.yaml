@@ -31,7 +31,7 @@ optim:
   grad_clip_norm: 1.0
 
 pretrain:
-  completion_freq: 0.0
+  completion_freq: 0.5
   max_completion_ratio: 0.3
   min_completion_ratio: 0.1
 
