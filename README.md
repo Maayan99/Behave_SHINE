@@ -31,3 +31,7 @@ reconstruction
 8B:
 reconstruction
 10% add completion
+
+no bias improves performance
+
+current: lora 4 mean pool 2

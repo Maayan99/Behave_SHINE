@@ -440,8 +440,8 @@ def main(cfg: DictConfig):
         tmp_model = MetaModelCls.from_pretrained(cfg.model.model_from, config=config)
         lora_numel = tmp_model.lora_params_numel(cfg.model.lora_r)
         assert lora_numel % (cfg.hidden_size * cfg.num_layers) == 0, \
-            "For transformer metanetwork, num_mem_token must be set to model.lora_params_numel(lora_r) / (hidden_size * num_layers)"
-        config.num_mem_token = tmp_model.lora_params_numel(cfg.model.lora_r) // (cfg.hidden_size * cfg.num_layers)
+            "For transformer metanetwork, num_mem_token must be set to model.lora_params_numel(lora_r) * mean_pool_size / (hidden_size * num_layers)"
+        config.num_mem_token = tmp_model.lora_params_numel(cfg.model.lora_r) * cfg.metanetwork.transformer_cfg.mean_pool_size // (cfg.hidden_size * cfg.num_layers)
         cfg.num_mem_token = config.num_mem_token
         del tmp_model
         if is_main_process():

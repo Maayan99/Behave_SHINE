@@ -36,6 +36,7 @@ class MetanetworkTransformer(nn.Module):
         self.num_layers = cfg.num_layers
         self.num_mem_token = cfg.num_mem_token
         self.hidden_size = cfg.hidden_size
+        self.mean_pool_size = cfg.metanetwork.transformer_cfg.mean_pool_size
 
         self.layer_pe = nn.Parameter(torch.zeros((self.num_layers, self.hidden_size)), requires_grad=True)
         self.token_pe = nn.Parameter(torch.zeros((self.num_mem_token, self.hidden_size)), requires_grad=True)
@@ -44,7 +45,9 @@ class MetanetworkTransformer(nn.Module):
         self.transformer_layers = nn.ModuleList([nn.TransformerEncoderLayer(**transformer_cfg.encoder_cfg) for _ in range(transformer_cfg.num_layers)])
         
         self.scale = nn.Parameter(torch.ones((1, self.num_layers, self.num_mem_token, 1)), requires_grad=True)
-        self.bias = nn.Parameter(torch.zeros((1, self.num_layers, self.num_mem_token, self.hidden_size)), requires_grad=True)
+        self.use_final_bias = transformer_cfg.use_final_bias
+        if self.use_final_bias:
+            self.bias = nn.Parameter(torch.zeros((1, self.num_layers, self.num_mem_token // self.mean_pool_size, self.hidden_size)), requires_grad=True)
 
     def forward(self, memory_states:torch.Tensor) -> dict:
         '''
@@ -57,7 +60,10 @@ class MetanetworkTransformer(nn.Module):
                 memory_states = self.transformer_layers[i](memory_states.transpose(1, 2).flatten(0, 1)).unflatten(0, (batch_size, self.num_mem_token)).transpose(1, 2) # exchange information among layers
             else:
                 memory_states = self.transformer_layers[i](memory_states.flatten(0, 1)).unflatten(0, (batch_size, self.num_layers)) # exchange information among tokens
-        memory_states = memory_states * self.scale  + self.bias
+        memory_states = memory_states * self.scale
+        memory_states = torch.mean(memory_states.unflatten(2, (self.mean_pool_size, self.num_mem_token // self.mean_pool_size)), dim=2)  # mean pool
+        if self.use_final_bias:
+            memory_states += self.bias
         return memory_states.flatten(1, -1)
 
 class Metanetwork(nn.Module):
