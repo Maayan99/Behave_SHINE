@@ -11,7 +11,7 @@
 #SBATCH -e metalora.err
 
 
-NUM_GPUS=4
+NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-0.6B"       
 SOURCE=transmla

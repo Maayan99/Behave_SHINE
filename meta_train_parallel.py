@@ -325,7 +325,8 @@ def evaluate(metanetwork_ddp_or_module, dataloader, device, use_amp: bool = Fals
 
         valid_tokens = (labels != -100).sum().item()
         total_loss += loss.item() * valid_tokens
-        total_reg_loss += reg_loss.item() * valid_tokens
+        if use_metanet:
+            total_reg_loss += reg_loss.item() * valid_tokens
         n_tokens += valid_tokens
 
     # Reduce across ranks
@@ -334,10 +335,11 @@ def evaluate(metanetwork_ddp_or_module, dataloader, device, use_amp: bool = Fals
         dist.all_reduce(t, op=dist.ReduceOp.SUM)
         total_loss = float(t[0].item())
         n_tokens = int(t[1].item())
-        total_reg_loss = float(t[2].item())
+        if use_metanet:
+            total_reg_loss = float(t[2].item())
 
     avg_loss = total_loss / max(n_tokens, 1)
-    avg_reg_loss = total_reg_loss / max(n_tokens, 1)
+    avg_reg_loss = total_reg_loss / max(n_tokens, 1) if use_metanet else None
     ppl = math.exp(avg_loss) if avg_loss < 20 else float("inf")
 
 
@@ -791,6 +793,7 @@ def main(cfg: DictConfig):
                         logger.info(f"[Eval @ step {global_step}] loss={eval_metrics['eval_loss']:.4f} ppl={eval_metrics['perplexity']:.2f}")
                         # see scale
                         torch.set_printoptions(threshold=float('inf'))
+                        logger.info(f"\n{torch.mean(ddp_metanet.module.metanetwork.scale.data[0,:,:,0], dim=1)}")
                         logger.info(f"\n{ddp_metanet.module.metanetwork.scale.data[0,:,:,0]}")
 
                     # # Best checkpoint saving on rank 0
