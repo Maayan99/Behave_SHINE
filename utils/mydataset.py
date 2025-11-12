@@ -324,28 +324,53 @@ class SquadCollator:
         answer_ids = answer_enc["input_ids"]
         answer_attention_mask = answer_enc["attention_mask"]
 
+
+        # if self.metatrain:            
+        #     messages = [[
+        #         {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
+        #         {"role": "user", "content": f"Please answer the following question: {question}"},
+        #         {"role": "assistant", "content": f"<think>I know the answer because I have read something about this.</think>\n{answer}"}
+        #     ] for question, answer in zip(questions, answers)]
+        # elif self.use_reference:
+        #     messages = [[
+        #         {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
+        #         {"role": "user", "content": f"Please review the following reference materials.\n\nReference:\n{evidence}\n\nBased on the reference, answer this question:\n{question}"},
+        #     ] for evidence, question in zip(evidences, questions)]
+        # elif self.only_question:
+        #     messages = [[
+        #         {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
+        #         {"role": "user", "content": f"Please answer the following question: {question}"},
+        #     ] for question in questions]
+        # else:
+        #     messages = [[
+        #         {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
+        #         {"role": "user", "content": f"Please answer the following question: {question}"},
+        #         {"role": "assistant", "content": f"<think>I know the answer because I have read something about this.</think>\n"}
+        #     ] for question in questions]
+        
         if self.metatrain:            
             messages = [[
                 {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
-                {"role": "user", "content": f"Please answer the following question: {question}"},
-                {"role": "assistant", "content": f"<think>I know the answer because I have read something about this.</think>\n{answer}"}
+                {"role": "user", "content": f"{question}"},
+                {"role": "assistant", "content": f"<think></think>\n{answer}"}
             ] for question, answer in zip(questions, answers)]
         elif self.use_reference:
             messages = [[
                 {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
-                {"role": "user", "content": f"Please review the following reference materials.\n\nReference:\n{evidence}\n\nBased on the reference, answer this question:\n{question}"},
+                {"role": "user", "content": f"Reference:\n{evidence}\n\nBased on the reference, answer this question:\n{question}"},
             ] for evidence, question in zip(evidences, questions)]
         elif self.only_question:
             messages = [[
                 {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
-                {"role": "user", "content": f"Please answer the following question: {question}"},
+                {"role": "user", "content": f"{question}"},
             ] for question in questions]
         else:
             messages = [[
                 {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
-                {"role": "user", "content": f"Please answer the following question: {question}"},
-                {"role": "assistant", "content": f"<think>I know the answer because I have read something about this.</think>\n"}
+                {"role": "user", "content": f"{question}"},
+                {"role": "assistant", "content": f"<think></think>\n"}
             ] for question in questions]
+
 
         input_enc = self.tokenizer.apply_chat_template(
                 messages,
@@ -356,6 +381,7 @@ class SquadCollator:
                 truncation=True,
                 return_dict=True,
                 padding="max_length",
+                enable_thinking=False,
             )
         input_ids = input_enc["input_ids"]
         input_attention_mask = input_enc["attention_mask"]
@@ -371,9 +397,18 @@ class SquadCollator:
             input_ids = input_ids[:, :-2]
             input_attention_mask = input_attention_mask[:, :-2]
         
+        tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0])
+        
+        # res = "input"
         # tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0])
         # for i, t in enumerate(tokens):
-        #     print(f"{i}: {t}")
+        #     res = f"{res}\n{i}: token_ids: {t} attention_mask: {input_attention_mask[0][i]} label: {labels[0][i] if labels is not None else 'N/A'}"
+        # res = f"{res}\nevidence"
+        # tokens = self.tokenizer.convert_ids_to_tokens(evidence_ids[0])
+        # for i, t in enumerate(tokens):
+        #     res = f"{res}\n{i}: token_ids: {t} attention_mask: {evidence_attention_mask[0][i]}"
+        # res = f"{res}\n\n"
+        # print(res)
         # exit()
         
         # # Debug print for the first item
