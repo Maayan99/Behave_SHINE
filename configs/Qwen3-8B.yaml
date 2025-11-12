@@ -15,7 +15,7 @@ paths:
   output_dir: "qwen-finetuned"   # final save; checkpoints go under Hydra's run dir unless overridden
 
 data:
-  max_length: 512
+  max_length: 1024
   train_batch_size: 1
   eval_batch_size: 2
   num_workers: 4
@@ -39,10 +39,10 @@ logging:
   logging_steps: 1
 
 eval:
-  eval_steps: 625
+  eval_steps: 1250
 
 save:
-  save_steps: 625
+  save_steps: 1250
   # save_best: true    # best files sometimes corrupted, disable for now
 
 # If you use a custom local module for LoRA-wrapped Qwen, keep it here.
@@ -70,7 +70,7 @@ metanetwork:
       bias: false
     mean_pool_size: 1 # Don't use
     use_final_bias: false
-    num_layers: 6 # Must be even
+    num_layers: 8 # Must be even
     scale: 0.001
     
 
