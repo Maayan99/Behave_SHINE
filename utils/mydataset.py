@@ -397,8 +397,6 @@ class SquadCollator:
             input_ids = input_ids[:, :-2]
             input_attention_mask = input_attention_mask[:, :-2]
         
-        tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0])
-        
         # res = "input"
         # tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0])
         # for i, t in enumerate(tokens):

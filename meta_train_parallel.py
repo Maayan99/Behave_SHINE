@@ -854,11 +854,11 @@ def main(cfg: DictConfig):
         if ddp_is_active():
             dist.barrier()
     
-    # Initial eval
-    if resume_dir is None:
-        init_eval_without_metanetwork = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, use_metanet=False, amp_dtype=amp_dtype)
-        if is_main_process():
-            logger.info(f"[without lora] loss={init_eval_without_metanetwork['eval_loss']:.4f} ppl={init_eval_without_metanetwork['perplexity']:.2f}")
+    # # Initial eval
+    # if resume_dir is None:
+    #     init_eval_without_metanetwork = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, use_metanet=False, amp_dtype=amp_dtype)
+    #     if is_main_process():
+    #         logger.info(f"[without lora] loss={init_eval_without_metanetwork['eval_loss']:.4f} ppl={init_eval_without_metanetwork['perplexity']:.2f}")
     # init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, metalora=metalora, amp_dtype=amp_dtype)
     # if writer is not None:
     #     writer.add_scalar("eval/loss", init_eval["eval_loss"], global_step)
