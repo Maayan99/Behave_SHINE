@@ -11,10 +11,11 @@
 #SBATCH -e test.err
 
 
-NUM_GPUS=4
+NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-0.6B"    
-TEST_BATCH_SIZE=16
+TEST_BATCH_SIZE=2
+TEST_GLOBAL_STEP=16250
         
 
 # Find available port
@@ -39,4 +40,5 @@ torchrun \
     test.py \
     --config-name $CONFIG_NAME \
     test.batch_size=$TEST_BATCH_SIZE \
+    test_global_step=$TEST_GLOBAL_STEP \
     > tmp_test.txt 2>&1

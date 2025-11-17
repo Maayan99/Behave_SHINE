@@ -869,6 +869,9 @@ def main(cfg: DictConfig):
     # Main training epochs
     for epoch in range(1, cfg.optim.num_epochs + 1):
         one_train_epoch(epoch, start_epoch, start_step_in_epoch)
+        if cfg.data.source == "squad":
+            train_ds.shuffle()
+        
 
     # Final save (rank 0 only)
     if is_main_process():

@@ -16,6 +16,7 @@ import random
 from collections import defaultdict
 from typing import Optional
 import numpy as np
+from copy import deepcopy
 
 import json
 
@@ -75,25 +76,29 @@ class GroupedSquadDataset(Dataset):
         sep: str = "\n\n",
         name: str = "Test",
     ):
-        name = f"[GroupedSquadDataset: {name}]"
+        self.name = f"[GroupedSquadDataset: {name}]"
         self.tokenizer = tokenizer
         self.sep = sep
         self.context_len = context_len
         self.data = data
         
+        self.shuffle()
+    
+    def shuffle(self):
         text_to_idx = defaultdict(list)
-        for i, ex in enumerate(data):
+        for i, ex in enumerate(self.data):
             ctx = str(ex["context"])
             text_to_idx[ctx].append(i)
 
-        all_context_list = list(text_to_idx.keys())
+        all_context_list = deepcopy(list(text_to_idx.keys()))
         self.text_to_idx = text_to_idx
         
-        if context_len is None:
+        if self.context_len is None:
             self.groups = [[ctx] for ctx in all_context_list]
         else:
             num_tokens = len(self.tokenizer(self.sep.join(all_context_list))["input_ids"])
-            num_groups = (num_tokens + context_len - 1) // context_len
+            num_groups = (num_tokens + self.context_len - 1) // self.context_len
+            random.shuffle(all_context_list)
             context_list_per_group = np.array_split(all_context_list, num_groups)
             self.groups = [[str(s) for s in arr] for arr in context_list_per_group]
             
@@ -108,11 +113,11 @@ class GroupedSquadDataset(Dataset):
             token_num = len(self.tokenizer(self.sep.join(group))["input_ids"])
             self.group_token_num.append(token_num)
             
-        print(f"{name}: {len(self.groups)} groups created from {len(data)} examples.")
-        print(f"{name}: Average group token length: {np.mean(self.group_token_num):.2f}, Max group token length: {np.max(self.group_token_num)}, Min group token length: {np.min(self.group_token_num)}")
-        print(f"{name}: Top 20 largest groups token lengths: {sorted(self.group_token_num, reverse=True)[:20]}")
-        print(f"{name}: Average contexts per group: {len(data) / len(self.groups):.2f}")
-
+        print(f"{self.name}: {len(self.groups)} groups created from {len(self.data)} examples.")
+        print(f"{self.name}: Average group token length: {np.mean(self.group_token_num):.2f}, Max group token length: {np.max(self.group_token_num)}, Min group token length: {np.min(self.group_token_num)}")
+        print(f"{self.name}: Top 20 largest groups token lengths: {sorted(self.group_token_num, reverse=True)[:20]}")
+        print(f"{self.name}: Average contexts per group: {len(self.data) / len(self.groups):.2f}")
+        
     def __len__(self):
         return len(self.data)
 

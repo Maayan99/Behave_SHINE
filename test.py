@@ -384,10 +384,10 @@ def main(cfg: DictConfig):
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         local_results = test(cfg, metanetwork, tokenizer, test_loader, use_metanet=True, use_amp=cfg.run.use_amp, device=device, metalora=metalora, amp_dtype=amp_dtype)
         gather_and_save(local_results, ".json")
-        local_results_no_metanet = test(cfg, metanetwork, tokenizer, test_loader_no_metanet, use_metanet=False, use_amp=cfg.run.use_amp, device=device, amp_dtype=amp_dtype)
-        gather_and_save(local_results_no_metanet, "_no_metanet.json")
-        local_results_only_question = test(cfg, metanetwork, tokenizer, test_loader_only_question, use_metanet=False, use_amp=cfg.run.use_amp, device=device, amp_dtype=amp_dtype)
-        gather_and_save(local_results_only_question, "_only_question.json")
+        # local_results_no_metanet = test(cfg, metanetwork, tokenizer, test_loader_no_metanet, use_metanet=False, use_amp=cfg.run.use_amp, device=device, amp_dtype=amp_dtype)
+        # gather_and_save(local_results_no_metanet, "_no_metanet.json")
+        # local_results_only_question = test(cfg, metanetwork, tokenizer, test_loader_only_question, use_metanet=False, use_amp=cfg.run.use_amp, device=device, amp_dtype=amp_dtype)
+        # gather_and_save(local_results_only_question, "_only_question.json")
         
         
         # # Gather results across ranks (if distributed), then write once on rank 0
