@@ -17,7 +17,7 @@ from collections import defaultdict
 from typing import Optional
 import numpy as np
 from copy import deepcopy
-
+from datasets import Column
 import json
 
 # ---------------------------
@@ -48,7 +48,6 @@ class TextDataset(Dataset):
     def __init__(self, texts: List[str], tokenizer, max_length: int = 512):
         self.texts = texts
         self.tokenizer = tokenizer
-        self.max_length = max_length
 
     def __len__(self):
         return len(self.texts)
@@ -126,6 +125,47 @@ class GroupedSquadDataset(Dataset):
         evidence = self.sep.join(list(random.sample(group, len(group))))
         return {"evidence": evidence, "question": str(self.data[idx]['question']), "answer": self.data[idx]['answers']['text']}
 
+class SFTDataset(Dataset):
+    def __init__(
+        self,
+        data: List[Dict[str, Any]],
+        tokenizer,
+    ):
+        self.tokenizer = tokenizer
+        self.data = data  
+         
+        context_token_lengths = []
+        conversations_token_lengths = []
+        tmp_data = data.shuffle().select(range(100))
+        for item in tmp_data:
+            context = item["context"]
+            conversations = item["conversations"]
+
+            context_encoded = tokenizer(
+                context,
+                padding=False,
+                return_tensors=None,
+            )
+            context_token_lengths.append(len(context_encoded["input_ids"]))
+            conversations_encoded = self.tokenizer.apply_chat_template(
+                conversations,
+                add_generation_prompt=False,   # adds the assistant turn start
+                tokenize=True,
+                return_tensors="pt",
+                return_dict=True,
+                enable_thinking=False,
+            )
+            conversations_token_lengths.append(len(conversations_encoded["input_ids"][0]))
+
+        print(f"[SFTDataset] Average context token length: {np.mean(context_token_lengths):.2f}({np.std(context_token_lengths):.2f})")
+        print(f"[SFTDataset] Average conversation token length: {np.mean(conversations_token_lengths):.2f}({np.std(conversations_token_lengths):.2f})")
+        
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx) -> Dict[str, Any]:
+        return {"evidence": self.data[idx]['context'], "conversation": self.data[idx]['conversations']}
+
 # ---------------------------
 # Collator with dynamic padding and label masking
 # ---------------------------
@@ -133,7 +173,8 @@ class GroupedSquadDataset(Dataset):
 class PretrainCollator:
     tokenizer: Any
     cfg: Any
-    max_length: int = 1024
+    context_max_length: int = 1024
+    conversation_max_length: int = 1024
     metatrain: bool = False
     thinkend_token_id: int = None
     
@@ -188,7 +229,7 @@ class PretrainCollator:
 
         evidence_enc = self.tokenizer(
             evidence_texts,
-            max_length=self.max_length,
+            max_length=self.context_max_length,
             truncation=True,
             return_tensors="pt",
             padding="max_length",
@@ -197,7 +238,7 @@ class PretrainCollator:
         evidence_attention_mask = evidence_enc["attention_mask"]
         answer_enc = self.tokenizer(
             answer_texts,
-            max_length=self.max_length,
+            max_length=self.conversation_max_length,
             truncation=True,
             return_tensors="pt",
             padding="max_length",
@@ -294,14 +335,17 @@ class PretrainCollator:
 @dataclass
 class SquadCollator:
     tokenizer: Any
-    max_length: int = 1024
+    context_max_length: int = 1024
+    conversation_max_length: int = 1024
     use_reference: bool = False
     metatrain: bool = False
     only_question: bool= False
     thinkend_token_id: int = None
     
     def __post_init__(self):
-        self.thinkend_token_id = self.tokenizer.convert_tokens_to_ids("</think>")
+        self.assistant_token_id = self.tokenizer.convert_tokens_to_ids("assistant")
+        self.imstart_token_id = self.tokenizer.convert_tokens_to_ids("<|im_start|>")
+        self.imend_token_id = self.tokenizer.convert_tokens_to_ids("<|im_end|>")
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         questions = [ex["question"] for ex in batch]
@@ -311,7 +355,7 @@ class SquadCollator:
            
         evidence_enc = self.tokenizer(
             evidences,
-            max_length=self.max_length,
+            max_length=self.context_max_length,
             truncation=True,
             return_tensors="pt",
             padding="max_length",
@@ -321,7 +365,7 @@ class SquadCollator:
         
         answer_enc = self.tokenizer(
             answers,
-            max_length=self.max_length,
+            max_length=self.conversation_max_length,
             truncation=True,
             return_tensors="pt",
             padding="max_length",
@@ -355,23 +399,20 @@ class SquadCollator:
         
         if self.metatrain:            
             messages = [[
-                {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
                 {"role": "user", "content": f"{question}"},
-                {"role": "assistant", "content": f"<think></think>\n{answer}"}
+                {"role": "assistant", "content": f"{answer}"}
             ] for question, answer in zip(questions, answers)]
         elif self.use_reference:
             messages = [[
-                {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
                 {"role": "user", "content": f"Reference:\n{evidence}\n\nBased on the reference, answer this question:\n{question}"},
             ] for evidence, question in zip(evidences, questions)]
         elif self.only_question:
             messages = [[
-                {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
                 {"role": "user", "content": f"{question}"},
             ] for question in questions]
         else:
+            ##################!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!check prompt!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!####################
             messages = [[
-                {"role": "system", "content": "You are a concise assistant. Only output the final answer with no extra words."},
                 {"role": "user", "content": f"{question}"},
                 {"role": "assistant", "content": f"<think></think>\n"}
             ] for question in questions]
@@ -382,7 +423,7 @@ class SquadCollator:
                 add_generation_prompt=True if (not self.metatrain and (self.use_reference or self.only_question)) else False,   # adds the assistant turn start
                 tokenize=True,
                 return_tensors="pt",
-                max_length=self.max_length + 2 if not self.metatrain and not self.use_reference and not self.only_question else self.max_length,
+                max_length=self.conversation_max_length + 2 if not self.metatrain and not self.use_reference and not self.only_question else self.conversation_max_length,
                 truncation=True,
                 return_dict=True,
                 padding="max_length",
@@ -393,11 +434,15 @@ class SquadCollator:
         labels = None
         if self.metatrain:
             labels = input_ids.clone()
+            masks = torch.zeros_like(labels)
             for i, id in enumerate(input_ids):
-                for j in range(len(id) - 1, -1, -1):
-                    if id[j].item() == self.thinkend_token_id:
-                        labels[i, :j+2] = -100
-                        break
+                last_imend = self.conversation_max_length
+                for j in range(len(id) - 1, 0, -1):
+                    if id[j].item() == self.imend_token_id:
+                        last_imend = j
+                    elif id[j].item() == self.assistant_token_id and id[j - 1] == self.imstart_token_id:
+                        masks[i, j+2: last_imend+2] = 1
+            labels = labels.masked_fill(masks == 0, -100)
         elif not (self.use_reference or self.only_question):
             input_ids = input_ids[:, :-2]
             input_attention_mask = input_attention_mask[:, :-2]
@@ -447,4 +492,79 @@ class SquadCollator:
             "answer_ids": answer_ids,
             "answer_attention_mask": answer_attention_mask,
             "questions": questions,
+        }
+
+
+@dataclass
+class SFTCollator:
+    tokenizer: Any
+    context_max_length: int = 1024
+    conversation_max_length: int = 1024
+    
+    def __post_init__(self):
+        self.assistant_token_id = self.tokenizer.convert_tokens_to_ids("assistant")
+        self.imstart_token_id = self.tokenizer.convert_tokens_to_ids("<|im_start|>")
+        self.imend_token_id = self.tokenizer.convert_tokens_to_ids("<|im_end|>")
+
+    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        evidence_texts = [t['evidence'] for t in batch]
+        conversation_texts = [t['conversation'] for t in batch]
+        if isinstance(conversation_texts[0], Column):
+            conversation_texts = list(conversation_texts[0])  # or conversation_texts[0][:]
+
+        evidence_enc = self.tokenizer(
+            evidence_texts,
+            max_length=self.context_max_length,
+            truncation=True,
+            return_tensors="pt",
+            padding="max_length",
+        )
+        evidence_ids = evidence_enc["input_ids"]
+        evidence_attention_mask = evidence_enc["attention_mask"]
+
+        input_enc = self.tokenizer.apply_chat_template(
+                conversation_texts,
+                add_generation_prompt=False,   # adds the assistant turn start
+                tokenize=True,
+                return_tensors="pt",
+                max_length=self.conversation_max_length,
+                truncation=True,
+                return_dict=True,
+                padding="max_length",
+                enable_thinking=False,
+            )
+        input_ids = input_enc["input_ids"]
+        input_attention_mask = input_enc["attention_mask"]
+
+        labels = input_ids.clone()
+        masks = torch.zeros_like(labels)
+        for i, id in enumerate(input_ids):
+            last_imend = self.conversation_max_length
+            for j in range(len(id) - 1, 0, -1):
+                if id[j].item() == self.imend_token_id:
+                    last_imend = j
+                elif id[j].item() == self.assistant_token_id and id[j - 1] == self.imstart_token_id:
+                    masks[i, j+2: last_imend+2] = 1
+        labels = labels.masked_fill(masks == 0, -100)
+        
+           
+        # res = "input"
+        # tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0])
+        # for i, t in enumerate(tokens):
+        #     res = f"{res}\n{i}: token_ids: {t} attention_mask: {input_attention_mask[0][i]} label: {labels[0][i] if labels is not None else 'N/A'}"
+        # res = f"{res}\nevidence"
+        # tokens = self.tokenizer.convert_ids_to_tokens(evidence_ids[0])
+        # for i, t in enumerate(tokens):
+        #     res = f"{res}\n{i}: token_ids: {t} attention_mask: {evidence_attention_mask[0][i]}"
+        # res = f"{res}\n\n"
+        # print(res)
+        # exit()
+                
+        return {
+            "evidence": evidence_texts,
+            "evidence_ids": evidence_ids,
+            "evidence_attention_mask": evidence_attention_mask,
+            "input_ids": input_ids,
+            "labels": labels,
+            "input_attention_mask": input_attention_mask,
         }

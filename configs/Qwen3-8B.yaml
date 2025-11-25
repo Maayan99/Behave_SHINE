@@ -1,3 +1,4 @@
+name: default
 mode: train
 
 resume_global_step: -1  # -1: don't resume,   int: resume from global steps,  latest: resume from latest
@@ -6,7 +7,7 @@ test_global_step: latest # int: test at global steps,  latest: test at latest
 run:
   seed: 42
   use_amp: false           # set false to disable AMP (can't be used now, bugs)
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 4
   device: cuda                # auto | cuda | cpu
   use_gradient_checkpoint: true
   
@@ -15,7 +16,8 @@ paths:
   output_dir: "qwen-finetuned"   # final save; checkpoints go under Hydra's run dir unless overridden
 
 data:
-  max_length: 1024
+  context_max_length: 1024
+  conversation_max_length: 1024
   train_batch_size: 1
   eval_batch_size: 2
   num_workers: 4
@@ -48,7 +50,7 @@ save:
 # If you use a custom local module for LoRA-wrapped Qwen, keep it here.
 # Otherwise, replace with a transformers model import path and update train.py accordingly.
 model:
-  lora_r: 16
+  lora_r: 8
   num_mem_token: ${num_mem_token}
   metamodel_class_path: "LoraQwen.LoraQwen3ForCausalLM" # module.ClassName
   config_class_path: "LoraQwen.Qwen3Config" # module.ClassName
@@ -70,7 +72,7 @@ metanetwork:
       bias: false
     mean_pool_size: 1 # Don't use
     use_final_bias: false
-    num_layers: 8 # Must be even
+    num_layers: 4 # Must be even
     scale: 0.001
     
 

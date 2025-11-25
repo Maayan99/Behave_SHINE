@@ -27,3 +27,4 @@ squad_statistics.py
 squad_text_length_distribution.png
 squad_context_length_distribution.png
 squad_question_length_distribution.png
+*.jsonl

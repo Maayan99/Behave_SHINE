@@ -10,16 +10,19 @@
 #SBATCH -o metalora.out
 #SBATCH -e metalora.err
 
-
-NUM_GPUS=4
+NAME=4gpu_8lora
+NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-8B"
 NUM_EPOCHS=3
-EVAL_STEPS=625
-SAVE_STEPS=625
-USE_GRADIENT_CHECKPOINT=False
-MAX_LEN=1152
+EVAL_STEPS=350
+SAVE_STEPS=50
+GRADIENT_ACCUMULATION_STEPS=4
+USE_GRADIENT_CHECKPOINT=True
+CONTEXT_MAX_LEN=8192
+CONVERSATION_MAX_LEN=1024
 RESUME_GLOBAL_STEP=latest
+SOURCE=sft-ift
 
 # Find available port
 while true; do
@@ -42,10 +45,14 @@ nohup torchrun \
     --master_port=$MASTER_PORT \
     meta_train_parallel.py \
     --config-name $CONFIG_NAME \
+    name=$NAME \
     run.use_gradient_checkpoint=$USE_GRADIENT_CHECKPOINT \
     optim.num_epochs=$NUM_EPOCHS \
     eval.eval_steps=$EVAL_STEPS \
     save.save_steps=$SAVE_STEPS \
-    data.max_length=$MAX_LEN \
+    data.context_max_length=$CONTEXT_MAX_LEN \
+    data.conversation_max_length=$CONVERSATION_MAX_LEN \
+    run.gradient_accumulation_steps=$GRADIENT_ACCUMULATION_STEPS \
     resume_global_step=$RESUME_GLOBAL_STEP \
+    data.source=$SOURCE \
     > tmp_metatrain.txt 2>&1 &

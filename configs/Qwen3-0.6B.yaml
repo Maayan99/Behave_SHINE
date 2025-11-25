@@ -1,3 +1,4 @@
+name: default
 mode: train
 
 resume_global_step: -1  # -1: don't resume,   int: resume from global steps,  latest: resume from latest
@@ -15,7 +16,8 @@ paths:
   output_dir: "qwen-finetuned"   # final save; checkpoints go under Hydra's run dir unless overridden
 
 data:
-  max_length: 1024
+  context_max_length: 1024
+  conversation_max_length: 1024
   train_batch_size: 1
   eval_batch_size: 2
   num_workers: 4

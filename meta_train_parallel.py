@@ -43,7 +43,7 @@ import logging
 from torch.utils.tensorboard import SummaryWriter
 from metanetwork_family import Metanetwork
 
-from utils.mydataset import TextDataset, create_mock_dataset, SquadDataset, SquadCollator, PretrainCollator, GroupedSquadDataset
+from utils.mydataset import TextDataset, create_mock_dataset, SquadDataset, SquadCollator, PretrainCollator, GroupedSquadDataset, SFTDataset, SFTCollator
 from utils.myseed import set_seed
 from utils.mylogging import get_logger
 from utils.mysaveload import (
@@ -303,7 +303,7 @@ def evaluate(metanetwork_ddp_or_module, dataloader, device, use_amp: bool = Fals
             enabled=(use_amp and device.type == "cuda")
         )
     
-    for batch in dataloader:
+    for i, batch in enumerate(dataloader):
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         input_attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
@@ -461,6 +461,7 @@ def main(cfg: DictConfig):
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.tokenizer_from, padding_side="left")
     tokenizer.add_tokens(['<RECON>', '<COMP>'])
+    tokenizer.chat_template = "{%- if tools %}\n    {{- '<|im_start|>system\\n' }}\n    {%- if messages[0].role == 'system' %}\n        {{- messages[0].content + '\\n\\n' }}\n    {%- endif %}\n    {{- \"# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>\" }}\n    {%- for tool in tools %}\n        {{- \"\\n\" }}\n        {{- tool | tojson }}\n    {%- endfor %}\n    {{- \"\\n</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\\"name\\\": <function-name>, \\\"arguments\\\": <args-json-object>}\\n</tool_call><|im_end|>\\n\" }}\n{%- else %}\n    {%- if messages[0].role == 'system' %}\n        {{- '<|im_start|>system\\n' + messages[0].content + '<|im_end|>\\n' }}\n    {%- endif %}\n{%- endif %}\n{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}\n{%- for message in messages[::-1] %}\n    {%- set index = (messages|length - 1) - loop.index0 %}\n    {%- if ns.multi_step_tool and message.role == \"user\" and message.content is string and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) %}\n        {%- set ns.multi_step_tool = false %}\n        {%- set ns.last_query_index = index %}\n    {%- endif %}\n{%- endfor %}\n{%- for message in messages %}\n    {%- if message.content is string %}\n        {%- set content = message.content %}\n    {%- else %}\n        {%- set content = '' %}\n    {%- endif %}\n    {%- if (message.role == \"user\") or (message.role == \"system\" and not loop.first) %}\n        {{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>\\n' }}\n    {%- elif message.role == \"assistant\" %}\n        {%- set reasoning_content = '' %}\n        {%- if message.reasoning_content is string %}\n            {%- set reasoning_content = message.reasoning_content %}\n        {%- else %}\n            {%- if '</think>' in content %}\n                {%- set reasoning_content = content.split('</think>')[0].rstrip('\\n').split('<think>')[-1].lstrip('\\n') %}\n                {%- set content = content.split('</think>')[-1].lstrip('\\n') %}\n            {%- endif %}\n        {%- endif %}\n        {%- if loop.index0 > ns.last_query_index %}\n            {%- if (loop.last or (not loop.last and reasoning_content)) and (enable_thinking is not defined or enable_thinking != false) %}\n                {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content.strip('\\n') + '\\n</think>\\n\\n' + content.lstrip('\\n') }}\n            {%- else %}\n                {{- '<|im_start|>' + message.role + '\\n' + content }}\n            {%- endif %}\n        {%- else %}\n            {{- '<|im_start|>' + message.role + '\\n' + content }}\n        {%- endif %}\n        {%- if message.tool_calls %}\n            {%- for tool_call in message.tool_calls %}\n                {%- if (loop.first and content) or (not loop.first) %}\n                    {{- '\\n' }}\n                {%- endif %}\n                {%- if tool_call.function %}\n                    {%- set tool_call = tool_call.function %}\n                {%- endif %}\n                {{- '<tool_call>\\n{\"name\": \"' }}\n                {{- tool_call.name }}\n                {{- '\", \"arguments\": ' }}\n                {%- if tool_call.arguments is string %}\n                    {{- tool_call.arguments }}\n                {%- else %}\n                    {{- tool_call.arguments | tojson }}\n                {%- endif %}\n                {{- '}\\n</tool_call>' }}\n            {%- endfor %}\n        {%- endif %}\n        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}\n        {%- if loop.first or (messages[loop.index0 - 1].role != \"tool\") %}\n            {{- '<|im_start|>user' }}\n        {%- endif %}\n        {{- '\\n<tool_response>\\n' }}\n        {{- content }}\n        {{- '\\n</tool_response>' }}\n        {%- if loop.last or (messages[loop.index0 + 1].role != \"tool\") %}\n            {{- '<|im_end|>\\n' }}\n        {%- endif %}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n    {%- if enable_thinking is not defined or enable_thinking != false %}\n        {{- '<think>\\n\\n</think>\\n\\n' }}\n    {%- endif %}\n{%- endif %}"
     metamodel = MetaModelCls.from_pretrained(cfg.model.model_from, config=config)
     metamodel.reset_mem_tokens()
     metamodel.resize_token_embeddings(len(tokenizer))
@@ -471,7 +472,7 @@ def main(cfg: DictConfig):
     
     # Training loop scaffolding
     hydra_run_dir = os.getcwd()
-    ckpt_root = os.path.join(hydra_run_dir, "checkpoints", f"{cfg.mode}")
+    ckpt_root = os.path.join(hydra_run_dir, "checkpoints", f"{cfg.name}, "f"{cfg.mode}")
     if is_main_process():
         os.makedirs(ckpt_root, exist_ok=True)
     if cfg.resume_global_step == -1:
@@ -495,7 +496,7 @@ def main(cfg: DictConfig):
     else:
         if cfg.mode == "train":
             try:
-                pretrain_dir = os.path.join(hydra_run_dir, "checkpoints", "pretrain")
+                pretrain_dir = os.path.join(hydra_run_dir, "checkpoints", f"{cfg.name}", "pretrain")
                 pretrain_dir = get_latest_checkpoint(pretrain_dir)
                 metanetwork, metalora = load_checkpoint(metanetwork, pretrain_dir, device)
                 if is_main_process():
@@ -566,11 +567,6 @@ def main(cfg: DictConfig):
     # Data
     if is_main_process():
         logger.info("Preparing data...")
-    # if cfg.data.source == "mock":
-    #     train_texts, val_texts = create_mock_dataset()
-    #     train_ds = TextDataset(train_texts, tokenizer, max_length=cfg.data.max_length)
-    #     val_ds = TextDataset(val_texts, tokenizer, max_length=cfg.data.max_length)
-    #     collator = CausalLMDataCollator(tokenizer=tokenizer, max_length=cfg.data.max_length)
     if cfg.data.source == "transmla":
         dataset = load_dataset(os.path.join("data", "transmla_pretrain_6B_tokens"), split="train")
         split_dataset = dataset.train_test_split(test_size=0.0001, seed=42)
@@ -579,9 +575,10 @@ def main(cfg: DictConfig):
         if is_main_process():
             logger.info(f"Train len: {len(train_texts)}")
             logger.info(f"Val len: {len(val_texts)}")
-        train_ds = TextDataset(train_texts["text"], tokenizer, max_length=cfg.data.max_length)
-        val_ds = TextDataset(val_texts["text"], tokenizer, max_length=cfg.data.max_length)
-        collator = PretrainCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, metatrain=True, cfg=cfg)
+        train_ds = TextDataset(train_texts["text"], tokenizer)
+        val_ds = TextDataset(val_texts["text"], tokenizer)
+        train_collator = PretrainCollator(tokenizer=tokenizer, metatrain=True, cfg=cfg, conversation_max_length=cfg.data.conversation_max_length, context_max_length=cfg.data.context_max_length)
+        val_collator = PretrainCollator(tokenizer=tokenizer, metatrain=True, cfg=cfg, conversation_max_length=cfg.data.conversation_max_length, context_max_length=cfg.data.context_max_length)
     elif cfg.data.source == "squad":
         # features: ['id', 'title', 'context', 'question', 'answers'],
         # num_rows: 87599
@@ -591,7 +588,16 @@ def main(cfg: DictConfig):
         # val_ds = SquadDataset(val_dataset, tokenizer)
         train_ds = GroupedSquadDataset(train_dataset, tokenizer, 512, name="Train")
         val_ds = GroupedSquadDataset(val_dataset, tokenizer, 512, name="Validation")
-        collator = SquadCollator(tokenizer=tokenizer, max_length=cfg.data.max_length, metatrain=True)
+        train_collator = SquadCollator(tokenizer=tokenizer, conversation_max_length=cfg.data.conversation_max_length, context_max_length=cfg.data.context_max_length, metatrain=True)
+        val_collator = SquadCollator(tokenizer=tokenizer, conversation_max_length=cfg.data.conversation_max_length, context_max_length=cfg.data.context_max_length, metatrain=True)
+    elif cfg.data.source == "sft-ift":
+        dataset = load_dataset("json", data_files=os.path.join("data", "sft-ift.jsonl"))
+        train_ds = SFTDataset(dataset['train'], tokenizer)
+        val_dataset = load_dataset(os.path.join("data", "squad"), split="validation")
+        val_dataset = val_dataset.shuffle(seed=42).select(range(1000))
+        val_ds = GroupedSquadDataset(val_dataset, tokenizer, 512, name="Validation")
+        train_collator = SFTCollator(tokenizer=tokenizer, conversation_max_length=cfg.data.conversation_max_length, context_max_length=cfg.data.context_max_length)
+        val_collator = SquadCollator(tokenizer=tokenizer, conversation_max_length=cfg.data.conversation_max_length, context_max_length=cfg.data.context_max_length, metatrain=True)
     else:
         raise ValueError(f"Unknown data source: {cfg.data.source}")
 
@@ -611,7 +617,7 @@ def main(cfg: DictConfig):
         batch_size=cfg.data.train_batch_size,
         shuffle=False,
         sampler=train_sampler,
-        collate_fn=collator,
+        collate_fn=train_collator,
         pin_memory=pin,
         num_workers=getattr(cfg.data, "num_workers", num_workers_default),
         persistent_workers=pin and getattr(cfg.data, "num_workers", num_workers_default) > 0,
@@ -621,7 +627,7 @@ def main(cfg: DictConfig):
         batch_size=cfg.data.eval_batch_size,
         shuffle=False,
         sampler=val_sampler,
-        collate_fn=collator,
+        collate_fn=val_collator,
         pin_memory=pin,
         num_workers=getattr(cfg.data, "num_workers", num_workers_default),
         persistent_workers=pin and getattr(cfg.data, "num_workers", num_workers_default) > 0,
@@ -631,7 +637,7 @@ def main(cfg: DictConfig):
     optimizer, lr_scheduler = init_optimize(grouped_params, train_loader, cfg, device)
 
     # Only main process writes TB logs
-    tb_log_dir = os.path.join(hydra_run_dir, "tensorboard")
+    tb_log_dir = os.path.join(hydra_run_dir, "tensorboard", f"{cfg.name}", f"{cfg.mode}")
     writer = SummaryWriter(log_dir=tb_log_dir) if is_main_process() else None
     if is_main_process():
         logger.info(f"TensorBoard logs will be written to: {tb_log_dir}")
@@ -859,12 +865,12 @@ def main(cfg: DictConfig):
     #     init_eval_without_metanetwork = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, use_metanet=False, amp_dtype=amp_dtype)
     #     if is_main_process():
     #         logger.info(f"[without lora] loss={init_eval_without_metanetwork['eval_loss']:.4f} ppl={init_eval_without_metanetwork['perplexity']:.2f}")
-    # init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, metalora=metalora, amp_dtype=amp_dtype)
-    # if writer is not None:
-    #     writer.add_scalar("eval/loss", init_eval["eval_loss"], global_step)
-    #     writer.add_scalar("eval/ppl", init_eval["perplexity"], global_step)
-    # if is_main_process():
-    #     logger.info(f"[Eval @ step {global_step}] loss={init_eval['eval_loss']:.4f} ppl={init_eval['perplexity']:.2f}")
+    init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, metalora=metalora, amp_dtype=amp_dtype)
+    if writer is not None:
+        writer.add_scalar("eval/loss", init_eval["eval_loss"], global_step)
+        writer.add_scalar("eval/ppl", init_eval["perplexity"], global_step)
+    if is_main_process():
+        logger.info(f"[Eval @ step {global_step}] loss={init_eval['eval_loss']:.4f} ppl={init_eval['perplexity']:.2f}")
 
     # Main training epochs
     for epoch in range(1, cfg.optim.num_epochs + 1):

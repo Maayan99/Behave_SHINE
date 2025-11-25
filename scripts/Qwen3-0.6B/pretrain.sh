@@ -10,7 +10,7 @@
 #SBATCH -o metalora.out
 #SBATCH -e metalora.err
 
-
+NAME=haha
 NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-0.6B"       
@@ -42,6 +42,7 @@ nohup torchrun \
     --master_port=$MASTER_PORT \
     meta_train_parallel.py \
     --config-name $CONFIG_NAME \
+    name=$NAME \
     mode=pretrain \
     data.source=$SOURCE \
     data.train_batch_size=$TRAIN_BATCH_SIZE \

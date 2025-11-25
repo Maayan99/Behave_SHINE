@@ -10,15 +10,15 @@
 #SBATCH -o metalora.out
 #SBATCH -e metalora.err
 
-
-NUM_GPUS=4
+NAME=haha
+NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-8B"       
 SOURCE=transmla
 TRAIN_BATCH_SIZE=1
 TEST_BATCH_SIZE=2
 GRADIENT_ACCUMULATION_STEPS=4
-USE_GRADIENT_CHECKPOINT=True
+USE_GRADIENT_CHECKPOINT=False
 RESUME_GLOBAL_STEP=latest   # -1: don't resume,   int: resume from global steps,  latest: resume from latest
 
 # Find available port
@@ -42,6 +42,7 @@ nohup torchrun \
     --master_port=$MASTER_PORT \
     meta_train_parallel.py \
     --config-name $CONFIG_NAME \
+    name=$NAME \
     mode=pretrain \
     data.source=$SOURCE \
     data.train_batch_size=$TRAIN_BATCH_SIZE \
