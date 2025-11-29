@@ -29,7 +29,7 @@ optim:
   weight_decay: 0.01
   adapter_reg: 0.0 # 0.000001
   num_epochs: 1
-  warmup_steps: 100
+  warmup_steps: 2000
   grad_clip_norm: 1.0
 
 pretrain:
@@ -51,6 +51,7 @@ save:
 # Otherwise, replace with a transformers model import path and update train.py accordingly.
 model:
   lora_r: 16
+  metalora_r: 16
   num_mem_token: ${num_mem_token}
   metamodel_class_path: "LoraQwen.LoraQwen3ForCausalLM" # module.ClassName
   config_class_path: "LoraQwen.Qwen3Config" # module.ClassName
@@ -92,7 +93,7 @@ hydra:
     chdir: false
   run:
     # everyone uses the SAME dir
-    dir: outputs/${now:%H-%M-%S}
+    dir: checkpoints/${name}/${mode}/${now:%H-%M-%S}
   output_subdir: null  # avoid multiple `.hydra` subdirs trying to coexist
 
 hidden_size: -1

@@ -19,7 +19,7 @@ data:
   context_max_length: 1024
   conversation_max_length: 1024
   train_batch_size: 1
-  eval_batch_size: 2
+  eval_batch_size: 1
   num_workers: 4
   # Switch between "mock" and "hf" when you add a real dataset loader
   source: squad
@@ -29,7 +29,7 @@ optim:
   weight_decay: 0.01
   adapter_reg: 0.0 # 0.000001
   num_epochs: 1
-  warmup_steps: 100
+  warmup_steps: 2000
   grad_clip_norm: 1.0
 
 pretrain:
@@ -50,7 +50,8 @@ save:
 # If you use a custom local module for LoRA-wrapped Qwen, keep it here.
 # Otherwise, replace with a transformers model import path and update train.py accordingly.
 model:
-  lora_r: 8
+  lora_r: 4
+  metalora_r: 16
   num_mem_token: ${num_mem_token}
   metamodel_class_path: "LoraQwen.LoraQwen3ForCausalLM" # module.ClassName
   config_class_path: "LoraQwen.Qwen3Config" # module.ClassName
@@ -72,7 +73,7 @@ metanetwork:
       bias: false
     mean_pool_size: 1 # Don't use
     use_final_bias: false
-    num_layers: 4 # Must be even
+    num_layers: 6 # Must be even
     scale: 0.001
     
 
@@ -93,7 +94,7 @@ hydra:
     chdir: false
   run:
     # everyone uses the SAME dir
-    dir: outputs/${now:%H-%M-%S}
+    dir: checkpoints/${name}/${mode}/${now:%H-%M-%S}
   output_subdir: null  # avoid multiple `.hydra` subdirs trying to coexist
 
 hidden_size: -1

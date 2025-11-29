@@ -20,6 +20,8 @@ SAVE_STEPS=1250
 USE_GRADIENT_CHECKPOINT=False
 MAX_LEN=1152
 RESUME_GLOBAL_STEP=latest
+SOURCE=sft-ift
+WARMUP_STEPS=200
 
 # Find available port
 while true; do
@@ -49,4 +51,6 @@ nohup torchrun \
     save.save_steps=$SAVE_STEPS \
     data.max_length=$MAX_LEN \
     resume_global_step=$RESUME_GLOBAL_STEP \
+    data.source=$SOURCE \
+    optim.warmup_steps=$WARMUP_STEPS \
     > tmp_metatrain.txt 2>&1 &

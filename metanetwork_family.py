@@ -48,6 +48,8 @@ class MetanetworkTransformer(nn.Module):
         self.use_final_bias = transformer_cfg.use_final_bias
         if self.use_final_bias:
             self.bias = nn.Parameter(torch.zeros((1, self.num_layers, self.num_mem_token // self.mean_pool_size, self.hidden_size)), requires_grad=True)
+        
+        # self.set_mode(cfg.mode)
 
     def forward(self, memory_states:torch.Tensor) -> dict:
         '''
@@ -65,6 +67,16 @@ class MetanetworkTransformer(nn.Module):
         if self.use_final_bias:
             memory_states += self.bias
         return memory_states.flatten(1, -1)
+    
+    def set_mode(self, mode: str):
+        if mode == 'pretrain':
+            self.scale.requires_grad = True
+            if self.use_final_bias:
+                self.bias.requires_grad = True
+        elif mode == 'train':
+            self.scale.requires_grad = False
+            if self.use_final_bias:
+                self.bias.requires_grad = False
 
 class Metanetwork(nn.Module):
     def __init__(self, metamodel:nn.Module, cfg, output_dim: int):

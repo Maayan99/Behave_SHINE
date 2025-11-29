@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import re
 from typing import Dict, List, Tuple, Any
 
 import torch
@@ -64,7 +65,11 @@ class SquadDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx) -> Dict[str, Any]:
-        return {"evidence": str(self.data[idx]['context']), "question": str(self.data[idx]['question']), "answer": self.data[idx]['answers']['text']}
+        answer = [str(ans).strip() for ans in self.data[idx]['answers']['text']]
+        for i in range(len(answer)):
+            if answer[i][0].islower():
+                answer[i] = answer[i][0].upper() + answer[i][1:]
+        return {"evidence": str(self.data[idx]['context']).strip(), "question": str(self.data[idx]['question']).strip(), "answer": answer}
 
 class GroupedSquadDataset(Dataset):
     def __init__(
@@ -72,21 +77,28 @@ class GroupedSquadDataset(Dataset):
         data: List[Dict[str, Any]],
         tokenizer,
         context_len: Optional[int] = None,
-        sep: str = "\n\n",
+        sep: str = '\n\n',
         name: str = "Test",
+        seed: int = 42,
     ):
         self.name = f"[GroupedSquadDataset: {name}]"
         self.tokenizer = tokenizer
         self.sep = sep
         self.context_len = context_len
         self.data = data
+        self.seed = seed
         
         self.shuffle()
     
     def shuffle(self):
+        # Apply seed if provided (for determinism)
+        if self.seed is not None:
+            random.seed(self.seed)
+            np.random.seed(self.seed)
+
         text_to_idx = defaultdict(list)
         for i, ex in enumerate(self.data):
-            ctx = str(ex["context"])
+            ctx = str(ex["context"]).strip()
             text_to_idx[ctx].append(i)
 
         all_context_list = deepcopy(list(text_to_idx.keys()))
@@ -97,6 +109,7 @@ class GroupedSquadDataset(Dataset):
         else:
             num_tokens = len(self.tokenizer(self.sep.join(all_context_list))["input_ids"])
             num_groups = (num_tokens + self.context_len - 1) // self.context_len
+
             random.shuffle(all_context_list)
             context_list_per_group = np.array_split(all_context_list, num_groups)
             self.groups = [[str(s) for s in arr] for arr in context_list_per_group]
@@ -113,9 +126,15 @@ class GroupedSquadDataset(Dataset):
             self.group_token_num.append(token_num)
             
         print(f"{self.name}: {len(self.groups)} groups created from {len(self.data)} examples.")
-        print(f"{self.name}: Average group token length: {np.mean(self.group_token_num):.2f}, Max group token length: {np.max(self.group_token_num)}, Min group token length: {np.min(self.group_token_num)}")
+        print(f"{self.name}: Average group token length: {np.mean(self.group_token_num):.2f}, "
+              f"Max group token length: {np.max(self.group_token_num)}, "
+              f"Min group token length: {np.min(self.group_token_num)}")
         print(f"{self.name}: Top 20 largest groups token lengths: {sorted(self.group_token_num, reverse=True)[:20]}")
         print(f"{self.name}: Average contexts per group: {len(self.data) / len(self.groups):.2f}")
+        
+        for group in self.groups:
+            for ctx in group:
+                assert not ctx.startswith(" "), f"Context has leading space: '{ctx}'"
         
     def __len__(self):
         return len(self.data)
@@ -123,7 +142,11 @@ class GroupedSquadDataset(Dataset):
     def __getitem__(self, idx) -> Dict[str, Any]:
         group = self.groups[self.idx_to_groupidx[idx]]
         evidence = self.sep.join(list(random.sample(group, len(group))))
-        return {"evidence": evidence, "question": str(self.data[idx]['question']), "answer": self.data[idx]['answers']['text']}
+        answer = [str(ans).strip() for ans in self.data[idx]['answers']['text']]
+        for i in range(len(answer)):
+            if answer[i][0].islower():
+                answer[i] = answer[i][0].upper() + answer[i][1:]
+        return {"evidence": str(evidence).strip(), "question": str(self.data[idx]['question']).strip(), "answer": answer}
 
 class SFTDataset(Dataset):
     def __init__(
@@ -252,7 +275,7 @@ class PretrainCollator:
                 add_generation_prompt=False,   # adds the assistant turn start
                 tokenize=True,
                 return_tensors="pt",
-                max_length=self.max_length,
+                max_length=self.conversation_max_length,
                 truncation=True,
                 return_dict=True,
                 padding="max_length",
@@ -350,6 +373,7 @@ class SquadCollator:
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         questions = [ex["question"] for ex in batch]
         evidences = [ex["evidence"] for ex in batch]
+        assert isinstance(batch[0]["answer"], list), "Answers should be a list of possible answers."
         answers = [str(random.choice(ex["answer"])) for ex in batch]
         full_answers = [ex["answer"] for ex in batch]
            
@@ -484,6 +508,7 @@ class SquadCollator:
             "evidence": evidences,
             "evidence_ids": evidence_ids,
             "evidence_attention_mask": evidence_attention_mask,
+            "messages": messages,
             "input_ids": input_ids,
             "labels": labels,
             "input_attention_mask": input_attention_mask,

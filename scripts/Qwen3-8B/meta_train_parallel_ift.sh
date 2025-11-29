@@ -10,7 +10,7 @@
 #SBATCH -o metalora.out
 #SBATCH -e metalora.err
 
-NAME=4gpu_8lora
+NAME=8gpu_4lora_16metalora_lr5e-5
 NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-8B"
@@ -23,6 +23,8 @@ CONTEXT_MAX_LEN=8192
 CONVERSATION_MAX_LEN=1024
 RESUME_GLOBAL_STEP=latest
 SOURCE=sft-ift
+WARMUP_STEPS=200
+LEARNING_RATE=5e-5
 
 # Find available port
 while true; do
@@ -55,4 +57,6 @@ nohup torchrun \
     run.gradient_accumulation_steps=$GRADIENT_ACCUMULATION_STEPS \
     resume_global_step=$RESUME_GLOBAL_STEP \
     data.source=$SOURCE \
+    optim.warmup_steps=$WARMUP_STEPS \
+    optim.learning_rate=$LEARNING_RATE \
     > tmp_metatrain.txt 2>&1 &

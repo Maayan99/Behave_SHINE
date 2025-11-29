@@ -471,8 +471,7 @@ def main(cfg: DictConfig):
     freeze(metamodel) 
     
     # Training loop scaffolding
-    hydra_run_dir = os.getcwd()
-    ckpt_root = os.path.join(hydra_run_dir, "checkpoints", f"{cfg.name}, "f"{cfg.mode}")
+    ckpt_root = os.path.join("checkpoints", f"{cfg.name}", f"{cfg.mode}")
     if is_main_process():
         os.makedirs(ckpt_root, exist_ok=True)
     if cfg.resume_global_step == -1:
@@ -496,18 +495,18 @@ def main(cfg: DictConfig):
     else:
         if cfg.mode == "train":
             try:
-                pretrain_dir = os.path.join(hydra_run_dir, "checkpoints", f"{cfg.name}", "pretrain")
+                pretrain_dir = os.path.join("checkpoints", f"{cfg.name}", "pretrain")
                 pretrain_dir = get_latest_checkpoint(pretrain_dir)
                 metanetwork, metalora = load_checkpoint(metanetwork, pretrain_dir, device)
                 if is_main_process():
-                    logger.info("Loaded metanetwork from pretrain checkpoint.")
+                    logger.info(f"Loaded metanetwork from pretrain checkpoint. {pretrain_dir}")
             except Exception as e:
                 if is_main_process():
                     logger.info("No pretrain checkpoint found, initializing metanetwork from scratch.")
-                metalora = metanetwork.metamodel.init_lora_dict(cfg.model.lora_r, scale=cfg.metanetwork.transformer_cfg.scale, device=device)
+                metalora = metanetwork.metamodel.init_lora_dict(cfg.model.metalora_r, scale=cfg.metanetwork.transformer_cfg.scale, device=device)
         else:
             # Initialize metalora
-            metalora = metanetwork.metamodel.init_lora_dict(cfg.model.lora_r, scale=cfg.metanetwork.transformer_cfg.scale, device=device)
+            metalora = metanetwork.metamodel.init_lora_dict(cfg.model.metalora_r, scale=cfg.metanetwork.transformer_cfg.scale, device=device)
         
     metanetwork.metamodel.config.use_cache = False
 
@@ -584,6 +583,7 @@ def main(cfg: DictConfig):
         # num_rows: 87599
         train_dataset = load_dataset(os.path.join("data", "squad"), split="train")
         val_dataset = load_dataset(os.path.join("data", "squad"), split="validation")
+        val_dataset = val_dataset.shuffle(seed=42).select(range(1000))
         # train_ds = SquadDataset(train_dataset, tokenizer)
         # val_ds = SquadDataset(val_dataset, tokenizer)
         train_ds = GroupedSquadDataset(train_dataset, tokenizer, 512, name="Train")
@@ -637,7 +637,7 @@ def main(cfg: DictConfig):
     optimizer, lr_scheduler = init_optimize(grouped_params, train_loader, cfg, device)
 
     # Only main process writes TB logs
-    tb_log_dir = os.path.join(hydra_run_dir, "tensorboard", f"{cfg.name}", f"{cfg.mode}")
+    tb_log_dir = os.path.join("tensorboard", f"{cfg.name}", f"{cfg.mode}")
     writer = SummaryWriter(log_dir=tb_log_dir) if is_main_process() else None
     if is_main_process():
         logger.info(f"TensorBoard logs will be written to: {tb_log_dir}")
@@ -657,6 +657,9 @@ def main(cfg: DictConfig):
         best_eval_loss = resume_state["best_eval_loss"]
         start_epoch = resume_state["epoch"]
         start_step_in_epoch = resume_state["step_in_epoch"]
+        
+    if is_main_process():
+        logger.info(f"Mode: {cfg.mode}. Use scale grad: {metanetwork.metanetwork.scale.requires_grad}")
 
     def one_train_epoch(epoch, start_epoch=1, start_step_in_epoch=0):
         nonlocal global_step, best_eval_loss
@@ -865,12 +868,12 @@ def main(cfg: DictConfig):
     #     init_eval_without_metanetwork = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, use_metanet=False, amp_dtype=amp_dtype)
     #     if is_main_process():
     #         logger.info(f"[without lora] loss={init_eval_without_metanetwork['eval_loss']:.4f} ppl={init_eval_without_metanetwork['perplexity']:.2f}")
-    init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, metalora=metalora, amp_dtype=amp_dtype)
-    if writer is not None:
-        writer.add_scalar("eval/loss", init_eval["eval_loss"], global_step)
-        writer.add_scalar("eval/ppl", init_eval["perplexity"], global_step)
-    if is_main_process():
-        logger.info(f"[Eval @ step {global_step}] loss={init_eval['eval_loss']:.4f} ppl={init_eval['perplexity']:.2f}")
+    # init_eval = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, metalora=metalora, amp_dtype=amp_dtype)
+    # if writer is not None:
+    #     writer.add_scalar("eval/loss", init_eval["eval_loss"], global_step)
+    #     writer.add_scalar("eval/ppl", init_eval["perplexity"], global_step)
+    # if is_main_process():
+    #     logger.info(f"[Eval @ step {global_step}] loss={init_eval['eval_loss']:.4f} ppl={init_eval['perplexity']:.2f}")
 
     # Main training epochs
     for epoch in range(1, cfg.optim.num_epochs + 1):
@@ -901,7 +904,7 @@ def main(cfg: DictConfig):
             )
             logger.info(f"Model saved to {stable_out}")
 
-        logger.info(f"All artifacts in Hydra run dir: {hydra_run_dir}")
+        logger.info(f"Complete !")
 
     if writer is not None:
         writer.close()
