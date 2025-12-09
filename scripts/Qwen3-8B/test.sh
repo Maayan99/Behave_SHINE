@@ -10,12 +10,14 @@
 #SBATCH -o test.out
 #SBATCH -e test.err
 
-NAME=?????????
-NUM_GPUS=4
+NAME=8gpu_4lora_4metalora_lr5e-5_grouppretrain_1450
+NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-8B"       
-TEST_BATCH_SIZE=8
-TEST_GLOBAL_STEP=latest
+TEST_BATCH_SIZE=4
+TEST_GLOBAL_STEP=1300
+TEST_SOURCE=squad
+NUM_LAYERS=4
         
 
 # Find available port
@@ -39,6 +41,9 @@ nohup torchrun \
     --master_port=$MASTER_PORT \
     test.py \
     --config-name $CONFIG_NAME \
+    name=$NAME \
     test.batch_size=$TEST_BATCH_SIZE \
     test_global_step=$TEST_GLOBAL_STEP \
+    test.source=$TEST_SOURCE \
+    metanetwork.transformer_cfg.num_layers=$NUM_LAYERS \
     > tmp_test_$NAME.txt 2>&1 &

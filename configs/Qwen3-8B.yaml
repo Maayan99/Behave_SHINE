@@ -88,11 +88,12 @@ metanetwork:
 
 test:
   source: squad
-  context_len: 512
-  max_length: 4096
-  max_new_tokens: 1024
+  context_avg_len: 512
+  context_max_length: 1300
+  conversation_max_length: 128
+  max_new_tokens: 128
   save_path: test
-  batch_size: 16
+  batch_size: 4
   num_workers: 4 
   judger_model: gpt-4.1-nano
   max_concurrency: 32
