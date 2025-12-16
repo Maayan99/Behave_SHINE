@@ -8,7 +8,7 @@ conda create -n metalora python==3.12 -y
 conda activate metalora
 # pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121 change based on your cuda version
 pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
-pip install huggingface modelscope transformers datasets scikit-learn hydra-core tensorboard openai rouge seaborn
+pip install huggingface modelscope transformers datasets scikit-learn hydra-core tensorboard openai rouge seaborn matplotlib
 ```
 
 Download Model

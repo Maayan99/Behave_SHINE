@@ -164,8 +164,8 @@ class Metanetwork(nn.Module):
         if use_metanet:
             assert metalora is not None, "metalora cannot be None when use_metanet is True"
             loradict, plain_output = self.generate_lora_dict(evidence_ids, evidence_attention_mask, metalora, use_gradient_checkpoint=use_gradient_checkpoint, return_plain=True, method=self.method)
-            if self.visualize_steps > 0 and step is not None and step % self.visualize_steps == 0:
-                visualize_loradict_to_files(loradict, out_dir=os.path.join(self.visualize_dir, f"step_{step}"))
+            # if self.visualize_steps > 0 and step is not None and step % self.visualize_steps == 0:
+            #     visualize_loradict_to_files(loradict, out_dir=os.path.join(self.visualize_dir, f"step_{step}"))
             outputs = self.metamodel(input_ids=input_ids, attention_mask=input_attention_mask, loradict=loradict, labels=labels, ignore_mem_token=True, use_gradient_checkpoint=use_gradient_checkpoint, **kwargs)
             outputs.reg_loss = self.adapter_reg * torch.abs(plain_output).sum()
         else:
