@@ -18,6 +18,7 @@ TEST_BATCH_SIZE=4
 TEST_GLOBAL_STEP=36250
 TEST_SOURCE=squad
 NUM_LAYERS=4
+METHOD=rl
         
 
 # Find available port
@@ -46,4 +47,5 @@ nohup torchrun \
     test_global_step=$TEST_GLOBAL_STEP \
     test.source=$TEST_SOURCE \
     metanetwork.transformer_cfg.num_layers=$NUM_LAYERS \
+    metanetwork.method=$METHOD \
     > tmp_test_$NAME.txt 2>&1 &

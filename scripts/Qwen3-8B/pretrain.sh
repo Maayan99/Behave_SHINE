@@ -22,10 +22,11 @@ USE_GRADIENT_CHECKPOINT=False
 RESUME_GLOBAL_STEP=latest   # -1: don't resume,   int: resume from global steps,  latest: resume from latest
 LEARNING_RATE=5e-5
 TYPE=transformer
-CONTEXT_MAX_LEN=2750
+CONTEXT_MAX_LEN=
 CONVERSATION_MAX_LEN=100
 NUM_LAYERS=6
 WARMUP_STEPS=200
+METHOD=rl
 
 # Find available port
 while true; do
@@ -62,4 +63,5 @@ nohup torchrun \
     metanetwork.type=$TYPE \
     metanetwork.transformer_cfg.num_layers=$NUM_LAYERS \
     optim.warmup_steps=$WARMUP_STEPS \
+    metanetwork.method=$METHOD \
     > tmp_pretrain_$NAME.txt 2>&1 &

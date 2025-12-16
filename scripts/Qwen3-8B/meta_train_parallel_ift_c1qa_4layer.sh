@@ -27,6 +27,7 @@ WARMUP_STEPS=400
 LEARNING_RATE=2.5e-5
 TYPE=transformer
 NUM_LAYERS=4
+METHOD=rl
 
 # Find available port
 while true; do
@@ -63,4 +64,5 @@ nohup torchrun \
     optim.learning_rate=$LEARNING_RATE \
     metanetwork.type=$TYPE \
     metanetwork.transformer_cfg.num_layers=$NUM_LAYERS \
+    metanetwork.method=$METHOD \
     > tmp_metatrain_$NAME.txt 2>&1 &

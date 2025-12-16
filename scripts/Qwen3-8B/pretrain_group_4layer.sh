@@ -26,6 +26,7 @@ CONTEXT_MAX_LEN=$((CONVERSATION_MAX_LEN - 10))
 TYPE=transformer
 NUM_LAYERS=4
 WARMUP_STEPS=200
+METHOD=rl
 
 # Find available port
 while true; do
@@ -56,6 +57,7 @@ python generate_group_idx.py  \
     data.context_max_length=$CONTEXT_MAX_LEN \
     metanetwork.transformer_cfg.num_layers=$NUM_LAYERS \
     optim.warmup_steps=$WARMUP_STEPS \
+    metanetwork.method=$METHOD \
     > tmp_pretrain_$NAME.txt 2>&1
 
 wait
@@ -82,4 +84,5 @@ nohup torchrun \
     data.context_max_length=$CONTEXT_MAX_LEN \
     metanetwork.transformer_cfg.num_layers=$NUM_LAYERS \
     optim.warmup_steps=$WARMUP_STEPS \
+    metanetwork.method=$METHOD \
     > tmp_pretrain_$NAME.txt 2>&1 &

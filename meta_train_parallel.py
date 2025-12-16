@@ -478,7 +478,9 @@ def main(cfg: DictConfig):
     metanetwork.train()
     metanetwork.to(device)
     freeze(metamodel) 
-    
+    if is_main_process():
+        logger.info(f"Metanetwork type: {cfg.metanetwork.type}, Transform method: {cfg.metanetwork.method}")
+        
     # Training loop scaffolding
     ckpt_root = os.path.join("checkpoints", f"{cfg.name}", f"{cfg.mode}")
     if is_main_process():
@@ -726,7 +728,7 @@ def main(cfg: DictConfig):
                 # Forward through possibly DDP-wrapped metanetwork
                 outputs = ddp_metanet(input_ids=input_ids, input_attention_mask=input_attention_mask, 
                                     evidence_ids=evidence_ids, evidence_attention_mask=evidence_attention_mask, 
-                                    labels=labels, metalora=metalora, use_gradient_checkpoint=cfg.run.use_gradient_checkpoint)
+                                    labels=labels, metalora=metalora, use_gradient_checkpoint=cfg.run.use_gradient_checkpoint, step=step)
                 loss = (outputs.loss / max(1, cfg.run.gradient_accumulation_steps)).item()
                 reg_loss = (outputs.reg_loss / max(1, cfg.run.gradient_accumulation_steps)).item()
                 backward_loss = (outputs.loss + outputs.reg_loss) / max(1, cfg.run.gradient_accumulation_steps)

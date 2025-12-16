@@ -19,7 +19,7 @@ EVAL_STEPS=625
 SAVE_STEPS=625
 GRADIENT_ACCUMULATION_STEPS=4
 USE_GRADIENT_CHECKPOINT=False
-CONTEXT_MAX_LEN=2260
+CONTEXT_MAX_LEN=2640
 CONVERSATION_MAX_LEN=100
 RESUME_GLOBAL_STEP=latest
 SOURCE=ift-c1qa
@@ -27,6 +27,7 @@ WARMUP_STEPS=400
 LEARNING_RATE=2.5e-5
 TYPE=transformer
 NUM_LAYERS=6
+METHOD=rl
 
 # Find available port
 while true; do
@@ -63,4 +64,5 @@ nohup torchrun \
     optim.learning_rate=$LEARNING_RATE \
     metanetwork.type=$TYPE \
     metanetwork.transformer_cfg.num_layers=$NUM_LAYERS \
+    metanetwork.method=$METHOD \
     > tmp_metatrain_$NAME.txt 2>&1 &

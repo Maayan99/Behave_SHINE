@@ -2,6 +2,9 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 import weakref
+from utils.myvisualize import visualize_loradict_to_files
+import os
+from utils.myddp import is_main_process
 
 class MetanetworkTransformer(nn.Module):
     def __init__(self, cfg):
@@ -130,6 +133,12 @@ class Metanetwork(nn.Module):
         self.output_dim = output_dim
         self.metamodel = metamodel
         self.adapter_reg = cfg.optim.adapter_reg
+        self.method = cfg.metanetwork.method
+        self.visualize_steps = cfg.visualize.visualize_steps
+        self.visualize_dir = cfg.visualize.visualize_dir
+        if self.visualize_steps > 0 and is_main_process():
+            os.makedirs(self.visualize_dir, exist_ok=True)
+        
         if cfg.metanetwork.type == "transformer":
             self.metanetwork = MetanetworkTransformer(cfg)
             self.scale = cfg.metanetwork.transformer_cfg.scale
@@ -148,24 +157,26 @@ class Metanetwork(nn.Module):
         return getattr(self.metamodel, "config", None)
 
     @torch.compile # (mode="max-autotune")
-    def forward(self, input_ids, input_attention_mask, evidence_ids, evidence_attention_mask, metalora = None, labels = None, use_metanet = True, use_gradient_checkpoint = False, **kwargs) -> dict:
+    def forward(self, input_ids, input_attention_mask, evidence_ids, evidence_attention_mask, metalora = None, labels = None, use_metanet = True, use_gradient_checkpoint = False, step = None, **kwargs) -> dict:
         '''
         memory_states: (batch_size, num_layer, num_mem_token, hidden_size)
         '''
         if use_metanet:
             assert metalora is not None, "metalora cannot be None when use_metanet is True"
-            loradict, plain_output = self.generate_lora_dict(evidence_ids, evidence_attention_mask, metalora, use_gradient_checkpoint=use_gradient_checkpoint, return_plain=True)
+            loradict, plain_output = self.generate_lora_dict(evidence_ids, evidence_attention_mask, metalora, use_gradient_checkpoint=use_gradient_checkpoint, return_plain=True, method=self.method)
+            if self.visualize_steps > 0 and step is not None and step % self.visualize_steps == 0:
+                visualize_loradict_to_files(loradict, out_dir=os.path.join(self.visualize_dir, f"step_{step}"))
             outputs = self.metamodel(input_ids=input_ids, attention_mask=input_attention_mask, loradict=loradict, labels=labels, ignore_mem_token=True, use_gradient_checkpoint=use_gradient_checkpoint, **kwargs)
             outputs.reg_loss = self.adapter_reg * torch.abs(plain_output).sum()
         else:
             outputs = self.metamodel(input_ids=input_ids, attention_mask=input_attention_mask, labels=labels, ignore_mem_token=True, use_gradient_checkpoint=use_gradient_checkpoint, **kwargs)
         return outputs
     
-    def generate_lora_dict(self, evidence_ids, evidence_attention_mask, metalora, use_gradient_checkpoint = False, return_plain = False) -> dict:
+    def generate_lora_dict(self, evidence_ids, evidence_attention_mask, metalora, use_gradient_checkpoint = False, return_plain = False, method = "Undefined") -> dict:
         outputs = self.metamodel(input_ids=evidence_ids, attention_mask=evidence_attention_mask, loradict=metalora, use_gradient_checkpoint=use_gradient_checkpoint)
         memory_states = outputs.memory_states
         plain_output = self.metanetwork(memory_states)  # (batch_size, output_dim)
-        loradict = self.metamodel.generate_lora_dict(self.lora_r, scale=self.scale, plain_tensor=plain_output)
+        loradict = self.metamodel.generate_lora_dict(self.lora_r, scale=self.scale, plain_tensor=plain_output, method=method)
         return loradict if not return_plain else (loradict, plain_output)
         
     

@@ -37,6 +37,10 @@ pretrain:
   max_completion_ratio: 0.3
   min_completion_ratio: 0.1
 
+visualize:
+  visualize_steps: -1
+  visualize_dir: checkpoints/${name}/${mode}/visualize/
+
 logging:
   logging_steps: 1
 
@@ -60,6 +64,7 @@ model:
 
 metanetwork:
   type: "transformer"
+  method: "rl"
   transformer_cfg:
     encoder_cfg:
       d_model: 4096 # Fixed
