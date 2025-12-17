@@ -50,7 +50,7 @@ def create_mock_dataset() -> Tuple[List[str], List[str]]:
 # Dataset
 # ---------------------------
 class TextDataset(Dataset):
-    def __init__(self, texts: List[str], tokenizer):
+    def __init__(self, texts: List[str], tokenizer = None):
         self.texts = texts
         self.tokenizer = tokenizer
 
@@ -442,6 +442,7 @@ class IFTC1QADataset(Dataset):
     def __getitem__(self, idx) -> Dict[str, Any]:
         item = self.item_list[idx]
         return {"evidence": item['context'], "conversations": item['conversations'], "contextlen": item['contextlen'], "conversationlen": item['conversationlen']}
+        
 
 # ---------------------------
 # Collator with dynamic padding and label masking

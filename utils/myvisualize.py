@@ -58,7 +58,7 @@ def visualize_loradict_to_files(
     only: Optional[str] = None,
     batch_index: int = 0,
     max_hw: int = 10000000,
-    dpi: int = 200,
+    dpi: int = 2000,
 ):
     """
     Save seaborn heatmaps for A, B, and A@B (and C if present) for each LoRA leaf.
@@ -93,6 +93,7 @@ def visualize_loradict_to_files(
     saved_paths = []
 
     for path, leaf in leaves:
+        print(f"Visualizing: {path}")
         A = leaf["A"]
         B = leaf["B"]
         C = leaf.get("C", None)
@@ -122,7 +123,7 @@ def visualize_loradict_to_files(
 
         has_C = C is not None
         ncols = 4 if has_C else 3
-        fig, axes = plt.subplots(1, ncols, figsize=(4.8 * ncols, 4.2))
+        fig, axes = plt.subplots(1, ncols, figsize=(24 * ncols, 21))
 
         if ncols == 3:
             axA, axB, axDW = axes
@@ -143,6 +144,7 @@ def visualize_loradict_to_files(
         fname = f"{_sanitize_filename(path)}__b{batch_index}.png"
         fpath = os.path.join(out_dir, fname)
         fig.savefig(fpath, dpi=dpi, bbox_inches="tight")
+        print(f"Saved to: {fpath}")
         plt.close(fig)
 
         saved_paths.append(fpath)
