@@ -33,7 +33,7 @@ export NCCL_DEBUG=WARN
 export TORCH_DISTRIBUTED_DEBUG=INFO
 
 python \
-    meta_train_parallel.py \
+    visualize.py \
     --config-name $CONFIG_NAME \
     name=$NAME \
     mode=visualize \
