@@ -32,12 +32,12 @@ export OMP_NUM_THREADS=4
 export NCCL_DEBUG=WARN
 export TORCH_DISTRIBUTED_DEBUG=INFO
 
-nohup python \
+python \
     meta_train_parallel.py \
     --config-name $CONFIG_NAME \
     name=$NAME \
     mode=visualize \
-    visualize.mode=$visualize_mode \
+    visualize.visualize_mode=$visualize_mode \
     data.source=$SOURCE \
     data.train_batch_size=$TRAIN_BATCH_SIZE \
     data.eval_batch_size=$TEST_BATCH_SIZE \
@@ -52,4 +52,4 @@ nohup python \
     optim.warmup_steps=$WARMUP_STEPS \
     metanetwork.method=$METHOD \
     visualize.visualize_steps=$visualize_steps \
-    > tmp_visualize_$NAME.txt 2>&1 &
+    > tmp_visualize_$NAME.txt 2>&1
