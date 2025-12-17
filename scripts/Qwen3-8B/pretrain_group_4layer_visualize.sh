@@ -1,17 +1,6 @@
 #!/bin/bash
 
-#SBATCH -J metalora
-#SBATCH -p IAI_SLURM_HGX
-#SBATCH --qos=16gpu-hgx
-#SBATCH -N 1
-#SBATCH --gres=gpu:4
-#SBATCH --time=48:00:00
-#SBATCH -c 64
-#SBATCH -o metalora.out
-#SBATCH -e metalora.err
-
 NAME=8gpu_4lora_4metalora_lr5e-5_grouppretrain_1450
-NUM_GPUS=8
 MASTER_PORT=18920       
 CONFIG_NAME="Qwen3-8B"       
 SOURCE=grouptransmla
@@ -43,12 +32,7 @@ export OMP_NUM_THREADS=4
 export NCCL_DEBUG=WARN
 export TORCH_DISTRIBUTED_DEBUG=INFO
 
-nohup torchrun \
-    --nproc_per_node=$NUM_GPUS \
-    --nnodes=1 \
-    --node_rank=0 \
-    --master_addr="127.0.0.1" \
-    --master_port=$MASTER_PORT \
+nohup python
     meta_train_parallel.py \
     --config-name $CONFIG_NAME \
     name=$NAME \
