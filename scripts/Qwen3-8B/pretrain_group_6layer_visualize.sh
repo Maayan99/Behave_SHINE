@@ -68,4 +68,4 @@ nohup torchrun \
     optim.warmup_steps=$WARMUP_STEPS \
     metanetwork.method=$METHOD \
     visualize.visualize_steps=$visualize_steps \
-    > tmp_pretrain_$NAME.txt 2>&1 &
+    > tmp_visualize_$NAME.txt 2>&1 &
