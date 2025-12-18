@@ -659,11 +659,19 @@ class TestPretrainCollator(BaseCollator):
             messages = [[
                 {"role": "user", "content": f"<COMP>"},
             ] for answer in answer_texts]
+            label_messages = [[
+                {"role": "user", "content": f"<COMP>"},
+                {"role": "assistant", "content": f"{answer}"}
+            ] for answer in answer_texts]
         elif self.mode == "recon":
             evidence_texts = texts
             answer_texts = texts
             messages = [[
                 {"role": "user", "content": f"<RECON>"},
+            ] for answer in answer_texts]
+            label_messages = [[
+                {"role": "user", "content": f"<RECON>"},
+                {"role": "assistant", "content": f"{answer}"}
             ] for answer in answer_texts]
         else:
             raise NotImplementedError(f"mode {self.mode} is not implemented in TestPretrainCollator.")
@@ -677,19 +685,26 @@ class TestPretrainCollator(BaseCollator):
         )
         evidence_ids = evidence_enc["input_ids"]
         evidence_attention_mask = evidence_enc["attention_mask"]
-        answer_enc = self.tokenizer(
-            answer_texts,
-            max_length=self.conversation_max_length,
-            truncation=True,
-            return_tensors="pt",
-            padding="max_length",
-        )
-        answer_ids = answer_enc["input_ids"]
-        answer_attention_mask = answer_enc["attention_mask"]
+        answer_ids = evidence_ids
+        answer_attention_mask = evidence_attention_mask
 
         input_enc = self.tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,   # adds the assistant turn start
+                tokenize=True,
+                return_tensors="pt",
+                max_length=9,
+                truncation=True,
+                return_dict=True,
+                padding="max_length",
+                enable_thinking=False,
+            )
+        input_ids = input_enc["input_ids"]
+        input_attention_mask = input_enc["attention_mask"]
+        
+        label_enc = self.tokenizer.apply_chat_template(
+                label_messages,
+                add_generation_prompt=False,   # adds the assistant turn start
                 tokenize=True,
                 return_tensors="pt",
                 max_length=self.conversation_max_length,
@@ -698,12 +713,10 @@ class TestPretrainCollator(BaseCollator):
                 padding="max_length",
                 enable_thinking=False,
             )
-        input_ids = input_enc["input_ids"]
-        input_attention_mask = input_enc["attention_mask"]
-        labels = None
-        if self.metatrain:
-            labels = input_ids.clone()
-            labels = self.mask_label(labels)
+        labels = label_enc["input_ids"]
+        full_input_ids = labels
+        full_input_attention_mask = label_enc["attention_mask"]
+        labels = self.mask_label(labels)
         
         # if is_main_process():
         #     res = "input"
@@ -749,8 +762,10 @@ class TestPretrainCollator(BaseCollator):
             "evidence_ids": evidence_ids,
             "evidence_attention_mask": evidence_attention_mask,
             "input_ids": input_ids,
-            "labels": labels,
             "input_attention_mask": input_attention_mask,
+            "full_input_ids": full_input_ids,
+            "full_input_attention_mask": full_input_attention_mask,
+            "labels": labels,
             "answers": texts,
             "answer_ids": answer_ids,
             "answer_attention_mask": answer_attention_mask,

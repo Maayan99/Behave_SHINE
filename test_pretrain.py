@@ -67,9 +67,9 @@ from utils.myddp import (
     barrier,
 )
 from utils.myinit import _resolve_device, _import_class
-from collections import OrderedDict
 import time
 import re
+from collections import OrderedDict, Counter
 
 logger = get_logger("test")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -125,7 +125,6 @@ def test_and_save(
     split_name: str,
     use_metanet: bool = True,
     metalora: Any = None,
-    use_amp: bool = False,
     device: torch.device = "cuda",
     amp_dtype=None,
     output_suffix: str = ".json",
@@ -216,11 +215,23 @@ def test_and_save(
         ground_truths = batch["answers"]
         ground_truths_ids = batch["answer_ids"]
         questions = batch["questions"]
-        labels = (
-            None
-            if batch["labels"] is None
-            else batch["labels"].to(device, non_blocking=True)
+        labels = batch["labels"]
+        full_input_ids = batch["full_input_ids"].to(device, non_blocking=True)
+        full_input_attention_mask = batch["full_input_attention_mask"].to(device, non_blocking=True)
+        
+        outputs = metanet(
+            input_ids=full_input_ids,
+            input_attention_mask=full_input_attention_mask,
+            evidence_ids=evidence_ids,
+            evidence_attention_mask=evidence_attention_mask,
+            labels=labels,
+            use_metanet=use_metanet,
+            metalora=metalora,
         )
+        loss = outputs.loss
+        valid_tokens = (labels != -100).sum().item()
+        print(f"loss: {loss}\noutputs: {outputs}\nvalid_tokens: {valid_tokens}")
+        exit()
 
         loradict = None
         if use_metanet:
@@ -229,33 +240,14 @@ def test_and_save(
                 evidence_attention_mask=evidence_attention_mask,
                 metalora=metalora,
             )
-
-        if use_amp:
-            if amp_dtype is None:
-                amp_dtype = (
-                    torch.bfloat16
-                    if torch.cuda.is_available()
-                    and torch.cuda.is_bf16_supported()
-                    else torch.float16
-                )
-            with torch.cuda.amp.autocast(dtype=amp_dtype):
-                gen_out = metanet.metamodel.generate(
-                    input_ids=input_ids,
-                    attention_mask=input_attention_mask,
-                    loradict=loradict,
-                    ignore_mem_token=True,
-                    max_new_tokens=cfg.test.max_new_tokens,
-                    do_sample=False,
-                )
-        else:
-            gen_out = metanet.metamodel.generate(
-                input_ids=input_ids,
-                attention_mask=input_attention_mask,
-                loradict=loradict,
-                ignore_mem_token=True,
-                max_new_tokens=cfg.test.max_new_tokens,
-                do_sample=False,
-            )
+        gen_out = metanet.metamodel.generate(
+            input_ids=input_ids,
+            attention_mask=input_attention_mask,
+            loradict=loradict,
+            ignore_mem_token=True,
+            max_new_tokens=cfg.test.max_new_tokens,
+            do_sample=False,
+        )
 
         input_lens = input_attention_mask.sum(dim=1).tolist()
 
@@ -335,6 +327,7 @@ def test_and_save(
             json.dump(merged, f, ensure_ascii=False, indent=2)
 
         logger.info(f"Saved {len(merged)} predictions to {final_out_path}")
+
 
 
 @hydra.main(version_base=None, config_path="configs")
@@ -438,7 +431,7 @@ def main(cfg: DictConfig):
             datasets.append(TextDataset([data[i]['text'] for i in idx_dict[str(l)]]))
             if is_main_process():
                 print(f"{l}: datasets num: {len(datasets[l-1])}")
-        collator = TestPretrainCollator(tokenizer, cfg, context_max_length=1020, conversation_max_length=9, mode="recon")
+        collator = TestPretrainCollator(tokenizer, cfg, context_max_length=1020, conversation_max_length=1030, mode="recon")
     else:
         raise ValueError(f"Unknown data source: {cfg.test.source}")
 
@@ -480,7 +473,6 @@ def main(cfg: DictConfig):
             split_name=f"{i}",  # e.g. "squad"
             use_metanet=True,
             metalora=metalora,
-            use_amp=cfg.run.use_amp,
             device=device,
             amp_dtype=amp_dtype,
             output_suffix=".json",
