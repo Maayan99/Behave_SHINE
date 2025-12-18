@@ -53,9 +53,9 @@ class LoraLinear(nn.Linear):
         x = input.reshape(Lb, num_beams, -1, self.in_features)
 
         # [Lb, beams, S, in] @ [Lb, in, r] -> [Lb, beams, S, r]
-        tmp = torch.matmul(x, A)
+        tmp = torch.matmul(x, A[:, None, :, :])
         # [Lb, beams, S, r] @ [Lb, r, out] -> [Lb, beams, S, out]
-        lora_out = torch.matmul(tmp, B)
+        lora_out = torch.matmul(tmp, B[:, None, :, :])
 
         if self.bias is None:
             torch._assert(C is None, "If bias is None, lora_dict['C'] must also be None")
@@ -66,6 +66,13 @@ class LoraLinear(nn.Linear):
 
         # Restore original middle dims: [Lb*beams, ..., out]
         lora_out = lora_out.reshape(*input.shape[:-1], self.out_features)
+        # try:
+        #     lora_out = lora_out.reshape(*input.shape[:-1], self.out_features)
+        # except RuntimeError:
+        #     res = f"input shape: {input.shape}, A shape: {A.shape}, B shape: {B.shape}, C shape: {C.shape if C is not None else 'None'}, \
+        #     in_features: {self.in_features}, out_features: {self.out_features}, tmp_shape: {tmp.shape}, lora_out shape before reshape: {lora_out.shape}, \
+        #         num_beams: {num_beams}, Lb: {Lb}, x shape: {x.shape}"
+        #     print(res)
 
         return base + lora_out
     

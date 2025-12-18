@@ -756,7 +756,7 @@ class TestPretrainCollator(BaseCollator):
             "answers": texts,
             "answer_ids": answer_ids,
             "answer_attention_mask": answer_attention_mask,
-            "questions": ["Please repeat what you have read."] * len(texts),
+            "questions": [f"{self.mode}"] * len(texts),
         }
         
 @dataclass

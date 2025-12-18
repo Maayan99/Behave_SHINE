@@ -429,6 +429,7 @@ def main(cfg: DictConfig):
         data_dir = os.path.join("data", "wikitext", "wikitext-103-raw-v1")
         ds = load_dataset(data_dir)
         data = list(ds["train"])
+        data = [item for item in data if len(item['text']) > 0]
         idx_dict = json.load(open(os.path.join(data_dir, "idx_dict.json")))
         for l in lens:
             datasets.append(TextDataset([data[i]['text'] for i in idx_dict[str(l)]]))
