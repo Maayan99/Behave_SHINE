@@ -19,6 +19,7 @@ TEST_GLOBAL_STEP=latest
 TEST_SOURCE=wikitext
 NUM_LAYERS=4
 METHOD=rl
+MAX_NEW_TOKENS=1100
         
 
 # Find available port
@@ -48,4 +49,5 @@ nohup torchrun \
     test.source=$TEST_SOURCE \
     metanetwork.transformer_cfg.num_layers=$NUM_LAYERS \
     metanetwork.method=$METHOD \
+    cfg.test.max_new_tokens=$MAX_NEW_TOKENS \
     > tmp_test_pretrain_$NAME.txt 2>&1 &

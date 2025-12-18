@@ -438,7 +438,7 @@ def main(cfg: DictConfig):
             datasets.append(TextDataset([data[i]['text'] for i in idx_dict[str(l)]]))
             if is_main_process():
                 print(f"{l}: datasets num: {len(datasets[l-1])}")
-        collator = TestPretrainCollator(tokenizer, cfg, context_max_length=1020, conversation_max_length=10, mode="recon")
+        collator = TestPretrainCollator(tokenizer, cfg, context_max_length=1020, conversation_max_length=9, mode="recon")
     else:
         raise ValueError(f"Unknown data source: {cfg.test.source}")
 
