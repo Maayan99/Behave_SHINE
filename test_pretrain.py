@@ -215,7 +215,7 @@ def test_and_save(
         ground_truths = batch["answers"]
         ground_truths_ids = batch["answer_ids"]
         questions = batch["questions"]
-        labels = batch["labels"]
+        labels = batch["labels"].to(device, non_blocking=True)
         full_input_ids = batch["full_input_ids"].to(device, non_blocking=True)
         full_input_attention_mask = batch["full_input_attention_mask"].to(device, non_blocking=True)
         
