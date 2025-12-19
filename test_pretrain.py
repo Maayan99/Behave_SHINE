@@ -75,6 +75,84 @@ logger = get_logger("test")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.backends.cuda.matmul.allow_tf32 = True
 
+import math
+from collections import Counter
+from typing import Sequence, Dict, Any
+
+def _ngrams(seq: Sequence[int], n: int):
+    return [tuple(seq[i:i+n]) for i in range(0, len(seq) - n + 1)]
+
+def _modified_precision(ref: Sequence[int], hyp: Sequence[int], n: int) -> float:
+    hyp_ngrams = Counter(_ngrams(hyp, n))
+    ref_ngrams = Counter(_ngrams(ref, n))
+    if not hyp_ngrams:
+        return 0.0
+    clipped = sum(min(count, ref_ngrams[ng]) for ng, count in hyp_ngrams.items())
+    total = sum(hyp_ngrams.values())
+    return clipped / total if total > 0 else 0.0
+
+def _brevity_penalty(ref_len: int, hyp_len: int) -> float:
+    if hyp_len == 0:
+        return 0.0
+    if hyp_len > ref_len:
+        return 1.0
+    return math.exp(1.0 - (ref_len / hyp_len))
+
+def bleu_n(ref: Sequence[int], hyp: Sequence[int], max_n: int = 4, smooth: float = 1e-9) -> Dict[int, float]:
+    """
+    Returns BLEU-1..BLEU-max_n using geometric mean of precisions up to n.
+    'smooth' avoids log(0) when a precision is 0.
+    """
+    ref_len, hyp_len = len(ref), len(hyp)
+    bp = _brevity_penalty(ref_len, hyp_len)
+
+    precisions = {n: _modified_precision(ref, hyp, n) for n in range(1, max_n + 1)}
+
+    bleu_scores = {}
+    for n in range(1, max_n + 1):
+        # geometric mean of p1..pn
+        log_sum = 0.0
+        for k in range(1, n + 1):
+            pk = precisions[k]
+            log_sum += math.log(max(pk, smooth))
+        geo_mean = math.exp(log_sum / n)
+        bleu_scores[n] = bp * geo_mean
+    return bleu_scores
+
+def exact_prefix_match_ratio(a: Sequence[int], b: Sequence[int]) -> float:
+    """
+    If both have m tokens and first mismatch is at position n (0-based),
+    exact match ratio = n / m. If identical, = 1.0
+    """
+    if len(a) != len(b):
+        raise ValueError(f"Sequences must have same length, got {len(a)} vs {len(b)}")
+    m = len(a)
+    if m == 0:
+        return 1.0
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n / m
+
+def compare_token_seqs(seq0: Sequence[int], seq1: Sequence[int], max_bleu_n: int = 4) -> Dict[str, Any]:
+    """
+    Compares two same-length token sequences:
+      - exact prefix match ratio
+      - bleu-1..bleu-max_bleu_n (seq0 as reference, seq1 as hypothesis)
+    """
+    if len(seq0) != len(seq1):
+        raise ValueError(f"Sequences must have same length, got {len(seq0)} vs {len(seq1)}")
+
+    exact = exact_prefix_match_ratio(seq0, seq1)
+    bleu_scores = bleu_n(seq0, seq1, max_n=max_bleu_n)
+
+    return {
+        "length": len(seq0),
+        "exact_prefix_match": exact,
+        "bleu": {f"bleu_{n}": bleu_scores[n] for n in range(1, max_bleu_n + 1)},
+    }
 
 def extract_think_and_answer(text: str) -> Tuple[str, str]:
     """
@@ -126,7 +204,6 @@ def test_and_save(
     use_metanet: bool = True,
     metalora: Any = None,
     device: torch.device = "cuda",
-    amp_dtype=None,
     output_suffix: str = ".json",
 ):
     """
@@ -239,14 +316,17 @@ def test_and_save(
         loss_per_token = loss_per_token.view(shift_labels.size())
         mask = (shift_labels != -100)
         loss_per_token = loss_per_token * mask
-        loss_per_sample = loss_per_token.sum(dim=1) / mask.sum(dim=1)
-        valid_tokens = (labels != -100).sum(dim=1).item()
-        res = ""
-        for i in range(batch_size):
-            res = f"{res}\bbatch_idx: {i}"
-            for j in range(len(labels)):
-                res = f"{res}\ntoken_idx: {j}, input{full_input_ids[i][j].item()}, attn_mask: {full_input_attention_mask[i][j].item()}, label: {labels[i][j].item()}, loss: {loss_per_token[i][j].item():.4f}"       
-        exit()
+        token_nums = mask[:, :-2].sum(dim=1)
+        loss_per_sample = loss_per_token[:, :-2].sum(dim=1) / token_nums
+        # res = ""
+        # res = f"evidence\n"
+        # for j in range(len(evidence_ids[0])):
+        #     res = f"{res}token_idx: {j}, token: {tokenizer.decode(evidence_ids[0][j].unsqueeze(0))}, id: {evidence_ids[0][j].item()}, attn_mask: {evidence_attention_mask[0][j].item()}\n"
+        # for i in range(batch_size):
+        #     res = f"{res}\n\nbatch_idx: {i}"
+        #     for j in range(len(labels[i]) - 1):
+        #         res = f"{res}\ntoken_idx: {j}, token: {tokenizer.decode(full_input_ids[i][j].unsqueeze(0))}, input{full_input_ids[i][j].item()}, attn_mask: {full_input_attention_mask[i][j].item()}, label: {labels[i][j].item()}, loss: {loss_per_token[i][j].item():.4f}"       
+        #     break
 
         loradict = None
         if use_metanet:
@@ -262,11 +342,18 @@ def test_and_save(
             ignore_mem_token=True,
             max_new_tokens=cfg.test.max_new_tokens,
             do_sample=False,
+            # num_beams=4,          # >1 turns on beam search
+            # early_stopping=True,  # optional: stop when beams are finished
         )
+        
+        gen_out = gen_out[:, 9:].to("cpu")
+        
+        # for idx, i in enumerate(gen_out[0][:token_nums[0]]):
+        #     res = f"{res}\ngenerated token {idx}: {tokenizer.decode(i.unsqueeze(0))}, id: {i.item()}, evidence token {tokenizer.decode(evidence_ids[0][-token_nums[0] + idx].unsqueeze(0))}, evidence id: {evidence_ids[0][-token_nums[0] + idx].item()}, "
+        # print(res)
+        # exit()
 
         input_lens = input_attention_mask.sum(dim=1).tolist()
-
-        gen_out = gen_out.to("cpu")
         input_ids_cpu = input_ids.to("cpu")
 
         for i in range(gen_out.size(0)):
@@ -279,16 +366,26 @@ def test_and_save(
             input_text = tokenizer.decode(
                 input_ids_cpu[i][-input_lens[i]:], skip_special_tokens=True
             )
+            think, answer = extract_think_and_answer(full_text)
+            
+            t = int(token_nums[i].item())  # make sure it's a python int
 
-            if full_text.startswith(input_text):
-                answer_text = full_text[len(input_text) :]
-            else:
-                answer_text = full_text
+            ref = ground_truths_ids[i][-t:]
+            hyp = gen_out[i][:t]
 
-            think, answer = extract_think_and_answer(answer_text)
+            # convert to list[int]
+            if torch.is_tensor(ref): ref = ref.tolist()
+            else: ref = list(map(int, ref))
+
+            if torch.is_tensor(hyp): hyp = hyp.tolist()
+            else: hyp = list(map(int, hyp))
+
+            statistics = compare_token_seqs(ref, hyp, max_bleu_n=4)
 
             record = {
                 "sample_idx": sample_idx,  # used for resuming and sorting
+                "statistics": statistics,
+                "loss": loss_per_sample[i].item(),
                 "evidence": evidences[i],
                 "input": input_text,
                 "question": questions[i],
@@ -306,7 +403,7 @@ def test_and_save(
 
     tmp_f.close()
     metanet.train()
-
+    
     # ---------- Final gather & merged save ----------
     local_results = []
     if os.path.exists(rank_tmp_path):
@@ -334,14 +431,103 @@ def test_and_save(
         merged = local_results
 
     if is_main_process():
+        # Sort and strip resume-only fields
         merged.sort(key=lambda x: x.get("sample_idx", 0))
         for rec in merged:
             rec.pop("sample_idx", None)
 
-        with open(final_out_path, "w", encoding="utf-8") as f:
-            json.dump(merged, f, ensure_ascii=False, indent=2)
+        # ----- Compute summary stats -----
+        # mean loss
+        losses = [r.get("loss", None) for r in merged]
+        losses = [x for x in losses if isinstance(x, (int, float))]
+        mean_loss = float(sum(losses) / max(len(losses), 1))
 
-        logger.info(f"Saved {len(merged)} predictions to {final_out_path}")
+        # mean statistics
+        exacts = []
+        lens_ = []
+        bleu_sums = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
+        bleu_counts = {1: 0,   2: 0,   3: 0,   4: 0}
+
+        for r in merged:
+            st = r.get("statistics", {}) or {}
+            if isinstance(st.get("exact_prefix_match", None), (int, float)):
+                exacts.append(float(st["exact_prefix_match"]))
+            if isinstance(st.get("length", None), (int, float)):
+                lens_.append(float(st["length"]))
+
+            bleu = st.get("bleu", {}) or {}
+            for n in (1, 2, 3, 4):
+                key = f"bleu_{n}"
+                val = bleu.get(key, None)
+                if isinstance(val, (int, float)):
+                    bleu_sums[n] += float(val)
+                    bleu_counts[n] += 1
+
+        mean_exact = float(sum(exacts) / max(len(exacts), 1))
+        mean_length = float(sum(lens_) / max(len(lens_), 1))
+        mean_bleu = {
+            f"bleu_{n}": float(bleu_sums[n] / max(bleu_counts[n], 1))
+            for n in (1, 2, 3, 4)
+        }
+
+        summary = {
+            "num_samples": len(merged),
+            "mean_loss": mean_loss,
+            "mean_statistics": {
+                "length": mean_length,
+                "exact_prefix_match": mean_exact,
+                "bleu": mean_bleu,
+            },
+        }
+
+        # ----- Write final output with summary first -----
+        final_payload = {
+            "summary": summary,
+            "predictions": merged,
+        }
+
+        with open(final_out_path, "w", encoding="utf-8") as f:
+            json.dump(final_payload, f, ensure_ascii=False, indent=2)
+
+        logger.info(
+            f"Saved {len(merged)} predictions (+summary) to {final_out_path}"
+        )
+
+    # # ---------- Final gather & merged save ----------
+    # local_results = []
+    # if os.path.exists(rank_tmp_path):
+    #     with open(rank_tmp_path, "r", encoding="utf-8") as f:
+    #         for line in f:
+    #             line = line.strip()
+    #             if not line:
+    #                 continue
+    #             try:
+    #                 rec = json.loads(line)
+    #             except json.JSONDecodeError:
+    #                 continue
+    #             local_results.append(rec)
+
+    # if ddp_is_active():
+    #     gathered = [None for _ in range(world_size)]
+    #     dist.all_gather_object(gathered, local_results)
+
+    #     if is_main_process():
+    #         merged = []
+    #         for part in gathered:
+    #             if part:
+    #                 merged.extend(part)
+    # else:
+    #     merged = local_results
+
+    # if is_main_process():
+    #     merged.sort(key=lambda x: x.get("sample_idx", 0))
+    #     for rec in merged:
+    #         rec.pop("sample_idx", None)
+
+    #     with open(final_out_path, "w", encoding="utf-8") as f:
+    #         json.dump(merged, f, ensure_ascii=False, indent=2)
+
+    #     logger.info(f"Saved {len(merged)} predictions to {final_out_path}")
 
 
 
@@ -443,15 +629,17 @@ def main(cfg: DictConfig):
         data = [item for item in data if len(item['text']) > 0]
         idx_dict = json.load(open(os.path.join(data_dir, "idx_dict.json")))
         for l in lens:
-            datasets.append(TextDataset([data[i]['text'] for i in idx_dict[str(l)]]))
+            datasets.append(TextDataset([data[i]['text'].strip() for i in idx_dict[str(l)]]))
             if is_main_process():
                 print(f"{l}: datasets num: {len(datasets[l-1])}")
-        collator = TestPretrainCollator(tokenizer, cfg, context_max_length=1020, conversation_max_length=1030, mode="recon")
+        collators = []
+        for l in lens:
+            collators.append(TestPretrainCollator(tokenizer, cfg, context_max_length=l*100 + 20, conversation_max_length=l*100 + 31, mode="recon"))
     else:
         raise ValueError(f"Unknown data source: {cfg.test.source}")
 
     pin = device.type == "cuda"
-    for i, ds in enumerate(datasets):
+    for i, (ds, collator) in enumerate(zip(datasets, collators)):
         test_sampler = (
             DistributedSampler(
                 ds, num_replicas=get_world_size(), rank=get_rank(), shuffle=False

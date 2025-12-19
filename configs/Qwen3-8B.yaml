@@ -97,7 +97,7 @@ test:
   context_max_length: 1300
   conversation_max_length: 128
   max_new_tokens: 128
-  save_path: test
+  save_path: test/${name}
   batch_size: 4
   num_workers: 4 
   judger_model: gpt-4.1-nano
