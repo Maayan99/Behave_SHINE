@@ -133,40 +133,40 @@ class GroupTextDataset(Dataset):
 
         print("[preprocess] Creating group_idx...")
 
-        # ----------------- base_len & chat_len (same logic as before) ----------------- #
-        test_q = "who is adam ?"
-        test_a = "I don't know"
-        message_1 = [
-            {"role": "user", "content": f"{test_q}"},
-            {"role": "assistant", "content": f"{test_a}"},
-        ]
-        input_enc_1 = self.tokenizer.apply_chat_template(
-            message_1,
-            add_generation_prompt=False,
-            tokenize=True,
-            return_tensors="pt",
-            return_dict=True,
-            enable_thinking=False,
-        )
-        len1 = len(input_enc_1["input_ids"][0])
+        # # ----------------- base_len & chat_len (same logic as before) ----------------- #
+        # test_q = "who is adam ?"
+        # test_a = "I don't know"
+        # message_1 = [
+        #     {"role": "user", "content": f"{test_q}"},
+        #     {"role": "assistant", "content": f"{test_a}"},
+        # ]
+        # input_enc_1 = self.tokenizer.apply_chat_template(
+        #     message_1,
+        #     add_generation_prompt=False,
+        #     tokenize=True,
+        #     return_tensors="pt",
+        #     return_dict=True,
+        #     enable_thinking=False,
+        # )
+        # len1 = len(input_enc_1["input_ids"][0])
 
-        message_2 = message_1 * 2
-        input_enc_2 = self.tokenizer.apply_chat_template(
-            message_2,
-            add_generation_prompt=False,
-            tokenize=True,
-            return_tensors="pt",
-            return_dict=True,
-            enable_thinking=False,
-        )
-        len2 = len(input_enc_2["input_ids"][0])
+        # message_2 = message_1 * 2
+        # input_enc_2 = self.tokenizer.apply_chat_template(
+        #     message_2,
+        #     add_generation_prompt=False,
+        #     tokenize=True,
+        #     return_tensors="pt",
+        #     return_dict=True,
+        #     enable_thinking=False,
+        # )
+        # len2 = len(input_enc_2["input_ids"][0])
 
-        len3 = len(self.tokenizer.tokenize(test_q)) + len(
-            self.tokenizer.tokenize(test_a)
-        )
+        # len3 = len(self.tokenizer.tokenize(test_q)) + len(
+        #     self.tokenizer.tokenize(test_a)
+        # )
 
-        self.base_len = len1 * 2 - len2
-        self.chat_len = len1 - len3 - self.base_len
+        self.base_len = 0
+        self.chat_len = 11
 
         # ----------------- FAST PART: compute token lengths with HF map ----------------- #
         print("[preprocess] Computing token lengths with HF Dataset.map...")
@@ -527,7 +527,6 @@ class PretrainCollator(BaseCollator):
         else:
             raise NotImplementedError("metatrain=False mode is not implemented in PretrainCollator.")
 
-        evidence_texts = [f"{etext}{self.eot}" for etext in evidence_texts]
         evidence_enc = self.tokenizer(
             evidence_texts,
             max_length=self.context_max_length,
@@ -830,7 +829,7 @@ class GroupPretrainCollator(BaseCollator):
         else:
             raise NotImplementedError("metatrain=False mode is not implemented in GroupPretrainCollator.")
 
-        evidence_texts_all = [f"{self.eot.join(random.sample(evidence_texts, len(evidence_texts)))}{self.eot}" for evidence_texts in evidence_texts_list]
+        evidence_texts_all = [self.eot.join(random.sample(evidence_texts, len(evidence_texts))) for evidence_texts in evidence_texts_list]
         evidence_enc = self.tokenizer(
             evidence_texts_all,
             max_length=self.context_max_length,
