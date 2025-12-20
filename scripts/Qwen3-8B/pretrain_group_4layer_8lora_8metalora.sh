@@ -10,7 +10,7 @@
 #SBATCH -o metalora.out
 #SBATCH -e metalora.err
 
-NAME=8gpu_8lora_8metalora_lr5e-5_grouppretrain_1400
+NAME=8gpu_8lora_8metalora_lr5e-5_grouppretrain_1380
 NUM_GPUS=8
 MASTER_PORT=18920       
 CONFIG_NAME="Qwen3-8B"       
