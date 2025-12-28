@@ -527,6 +527,9 @@ def main(cfg: DictConfig):
     metanetwork.metamodel.config.use_cache = False
 
     # ====== Wrap ONLY the trainable module in DDP when applicable ======
+    # metanetwork.metamodel.attn_implementation = "flash_attention_2"
+    # if is_main_process():
+    #     logger.info("attn_implementation: " + str(metanetwork.metamodel.attn_implementation))
     metanetwork.to(device)
     if should_use_ddp():
         ddp_metanet = DDP(

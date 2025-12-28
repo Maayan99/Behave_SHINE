@@ -19,6 +19,7 @@ TEST_GLOBAL_STEP=36250
 TEST_SOURCE=squad
 NUM_LAYERS=4
 METHOD=rl
+CONTEXT_AVG=512
         
 
 # Find available port
@@ -48,4 +49,5 @@ nohup torchrun \
     test.source=$TEST_SOURCE \
     metanetwork.transformer_cfg.num_layers=$NUM_LAYERS \
     metanetwork.method=$METHOD \
+    test.context_avg=$CONTEXT_AVG \
     > tmp_test_$NAME.txt 2>&1 &

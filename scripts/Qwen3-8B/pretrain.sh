@@ -11,7 +11,7 @@
 #SBATCH -e metalora.err
 
 NAME=tmp
-NUM_GPUS=2
+NUM_GPUS=8
 MASTER_PORT=18930      
 CONFIG_NAME="Qwen3-8B"       
 SOURCE=transmla
@@ -22,13 +22,13 @@ USE_GRADIENT_CHECKPOINT=False
 RESUME_GLOBAL_STEP=latest   # -1: don't resume,   int: resume from global steps,  latest: resume from latest
 LEARNING_RATE=5e-5
 TYPE=transformer
-CONVERSATION_MAX_LEN=1380
-CONTEXT_MAX_LEN=1371
-NUM_LAYERS=4
+CONVERSATION_MAX_LEN=1270
+CONTEXT_MAX_LEN=1261
+NUM_LAYERS=6
 WARMUP_STEPS=200
 METHOD=rl
-LORA_R=8
-METALORA_R=8
+LORA_R=4
+METALORA_R=4
 
 # Find available port
 while true; do

@@ -125,9 +125,7 @@ def test_and_save(
     split_name: str,
     use_metanet: bool = True,
     metalora: Any = None,
-    use_amp: bool = False,
     device: torch.device = "cuda",
-    amp_dtype=None,
     output_suffix: str = ".json",
 ):
     """
@@ -229,32 +227,14 @@ def test_and_save(
                 metalora=metalora,
             )
 
-        if use_amp:
-            if amp_dtype is None:
-                amp_dtype = (
-                    torch.bfloat16
-                    if torch.cuda.is_available()
-                    and torch.cuda.is_bf16_supported()
-                    else torch.float16
-                )
-            with torch.cuda.amp.autocast(dtype=amp_dtype):
-                gen_out = metanet.metamodel.generate(
-                    input_ids=input_ids,
-                    attention_mask=input_attention_mask,
-                    loradict=loradict,
-                    ignore_mem_token=True,
-                    max_new_tokens=cfg.test.max_new_tokens,
-                    do_sample=False,
-                )
-        else:
-            gen_out = metanet.metamodel.generate(
-                input_ids=input_ids,
-                attention_mask=input_attention_mask,
-                loradict=loradict,
-                ignore_mem_token=True,
-                max_new_tokens=cfg.test.max_new_tokens,
-                do_sample=False,
-            )
+        gen_out = metanet.metamodel.generate(
+            input_ids=input_ids,
+            attention_mask=input_attention_mask,
+            loradict=loradict,
+            ignore_mem_token=True,
+            max_new_tokens=cfg.test.max_new_tokens,
+            do_sample=False,
+        )
 
         input_lens = input_attention_mask.sum(dim=1).tolist()
 
@@ -421,7 +401,7 @@ def main(cfg: DictConfig):
     if is_main_process():
         logger.info("Preparing data...")
     if cfg.test.source == "squad":
-        names = ["squad"]
+        names = [f"squad_{cfg.test.context_avg}"]
         datasets = []
         for testset in names:
             data = load_dataset(
@@ -504,8 +484,6 @@ def main(cfg: DictConfig):
         if ddp_is_active():
             dist.barrier()
 
-        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-
         test_and_save(
             cfg=cfg,
             metanetwork_ddp_or_module=metanetwork,
@@ -514,37 +492,31 @@ def main(cfg: DictConfig):
             split_name=names[i],  # e.g. "squad"
             use_metanet=True,
             metalora=metalora,
-            use_amp=cfg.run.use_amp,
             device=device,
-            amp_dtype=amp_dtype,
             output_suffix=".json",
         )
-        test_and_save(
-            cfg=cfg,
-            metanetwork_ddp_or_module=metanetwork,
-            tokenizer=tokenizer,
-            testloader=test_loader_no_metanet,
-            split_name=f"{names[i]}_no_metanet",
-            use_metanet=False,
-            metalora=None,
-            use_amp=cfg.run.use_amp,
-            device=device,
-            amp_dtype=amp_dtype,
-            output_suffix=".json",
-        )
-        test_and_save(
-            cfg=cfg,
-            metanetwork_ddp_or_module=metanetwork,
-            tokenizer=tokenizer,
-            testloader=test_loader_only_question,
-            split_name=f"{names[i]}_only_question",
-            use_metanet=False,
-            metalora=None,
-            use_amp=cfg.run.use_amp,
-            device=device,
-            amp_dtype=amp_dtype,
-            output_suffix=".json",
-        )
+        # test_and_save(
+        #     cfg=cfg,
+        #     metanetwork_ddp_or_module=metanetwork,
+        #     tokenizer=tokenizer,
+        #     testloader=test_loader_no_metanet,
+        #     split_name=f"{names[i]}_no_metanet",
+        #     use_metanet=False,
+        #     metalora=None,
+        #     device=device,
+        #     output_suffix=".json",
+        # )
+        # test_and_save(
+        #     cfg=cfg,
+        #     metanetwork_ddp_or_module=metanetwork,
+        #     tokenizer=tokenizer,
+        #     testloader=test_loader_only_question,
+        #     split_name=f"{names[i]}_only_question",
+        #     use_metanet=False,
+        #     metalora=None,
+        #     device=device,
+        #     output_suffix=".json",
+        # )
 
     ddp_cleanup_if_needed()
 

@@ -666,8 +666,6 @@ def main(cfg: DictConfig):
         if ddp_is_active():
             dist.barrier()
 
-        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-
         test_and_save(
             cfg=cfg,
             metanetwork_ddp_or_module=metanetwork,
@@ -677,7 +675,6 @@ def main(cfg: DictConfig):
             use_metanet=True,
             metalora=metalora,
             device=device,
-            amp_dtype=amp_dtype,
             output_suffix=".json",
         )
 
