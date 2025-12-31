@@ -401,7 +401,7 @@ def main(cfg: DictConfig):
     if is_main_process():
         logger.info("Preparing data...")
     if cfg.test.source == "squad":
-        names = [f"squad_{cfg.test.context_avg}"]
+        names = [f"squad_{cfg.test.context_avg_len}"]
         datasets = []
         for testset in names:
             data = load_dataset(

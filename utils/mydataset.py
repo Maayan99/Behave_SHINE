@@ -913,7 +913,7 @@ class GroupPretrainCollator(BaseCollator):
             "input_ids": input_ids,
             "labels": labels,
             "input_attention_mask": input_attention_mask,
-            "questions": ["Please repeat what you have read."] * len(texts),
+            "questions": user_texts_list,
         }
 
 @dataclass

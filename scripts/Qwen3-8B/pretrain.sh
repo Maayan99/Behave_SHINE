@@ -22,13 +22,13 @@ USE_GRADIENT_CHECKPOINT=False
 RESUME_GLOBAL_STEP=latest   # -1: don't resume,   int: resume from global steps,  latest: resume from latest
 LEARNING_RATE=5e-5
 TYPE=transformer
-CONVERSATION_MAX_LEN=1270
-CONTEXT_MAX_LEN=1261
-NUM_LAYERS=6
+CONVERSATION_MAX_LEN=1360 # ok
+CONTEXT_MAX_LEN=1351
+NUM_LAYERS=4
 WARMUP_STEPS=200
 METHOD=rl
-LORA_R=4
-METALORA_R=4
+LORA_R=8
+METALORA_R=16
 
 # Find available port
 while true; do

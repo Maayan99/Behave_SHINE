@@ -740,23 +740,16 @@ def main(cfg: DictConfig):
             if writer is not None:
                 writer.add_scalar("train/lr", lr_scheduler.get_last_lr()[0], global_step)
 
-            backward_loss.backward()
-
             valid_tokens = (labels != -100).sum().item()
-            # Track per-rank; we’ll reduce for logging only
-            epoch_loss += loss * valid_tokens * max(1, cfg.run.gradient_accumulation_steps)
-            tmp_loss += loss * valid_tokens * max(1, cfg.run.gradient_accumulation_steps)
-            epoch_tokens += valid_tokens
-            tmp_tokens += valid_tokens
-            if math.isinf(tmp_loss) or math.isnan(tmp_loss):
-                logger.info("NaN/Inf loss detected.")
-                logger.info(f"Batch:\n{batch}")
-                logger.info(f"loss: {loss}")
-                logger.info(f"Tmp loss: {tmp_loss}")
-                logger.info(f"Epoch loss: {epoch_loss}")
-                logger.info(f"Valid tokens: {valid_tokens}")
-                logger.info(f"Tmp tokens: {tmp_tokens}")
-                logger.info(f"Epoch tokens: {epoch_tokens}")
+            if not math.isinf(loss) and not math.isnan(loss) and valid_tokens > 0:
+                backward_loss.backward()
+                epoch_loss += loss * valid_tokens * max(1, cfg.run.gradient_accumulation_steps)
+                tmp_loss += loss * valid_tokens * max(1, cfg.run.gradient_accumulation_steps)
+                epoch_tokens += valid_tokens
+                tmp_tokens += valid_tokens
+            else:
+                res = f"NaN/Inf loss detected at epoch {epoch} step {step}!\nBatch:\n{batch}\nloss: {loss}\nvalid tokens: {valid_tokens}\n\n"
+                logger.info(res)
 
             if step % max(1, cfg.run.gradient_accumulation_steps) == 0 or step == len(train_loader):
                 if cfg.optim.grad_clip_norm and cfg.optim.grad_clip_norm > 0:
