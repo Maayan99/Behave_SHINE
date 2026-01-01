@@ -10,7 +10,7 @@
 #SBATCH -o metalora.out
 #SBATCH -e metalora.err
 
-NAME=8gpu_8lora_128metalora_lr5e-5_grouppretrain_1170 # 4layer
+NAME=8gpu_8lora_128metalora_lr5e-5_grouppretrain_1160 # 4layer
 NUM_GPUS=8
 MASTER_PORT=18920       
 CONFIG_NAME="Qwen3-8B"       
@@ -21,7 +21,7 @@ GRADIENT_ACCUMULATION_STEPS=4
 USE_GRADIENT_CHECKPOINT=False
 RESUME_GLOBAL_STEP=latest   # -1: don't resume,   int: resume from global steps,  latest: resume from latest
 LEARNING_RATE=5e-5
-CONVERSATION_MAX_LEN=1170   # Extra base len: 0 Extra chat len per turn: 11
+CONVERSATION_MAX_LEN=1160   # Extra base len: 0 Extra chat len per turn: 11
 CONTEXT_MAX_LEN=$((CONVERSATION_MAX_LEN - 9)) # $((CONVERSATION_MAX_LEN - 10))
 TYPE=transformer
 NUM_LAYERS=4
