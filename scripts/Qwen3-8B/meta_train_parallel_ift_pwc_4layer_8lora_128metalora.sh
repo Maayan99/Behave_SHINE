@@ -14,17 +14,17 @@ NAME=8gpu_8lora_128metalora_lr5e-5_grouppretrain_1150
 NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-8B"
-NUM_EPOCHS=1
+NUM_EPOCHS=2
 EVAL_STEPS=625
 SAVE_STEPS=625
 GRADIENT_ACCUMULATION_STEPS=4
 USE_GRADIENT_CHECKPOINT=False
-CONTEXT_MAX_LEN=2380
-CONVERSATION_MAX_LEN=100
+CONTEXT_MAX_LEN=1150
+CONVERSATION_MAX_LEN=1150
 RESUME_GLOBAL_STEP=latest
-SOURCE=ift-c1qa
+SOURCE=ift-pwc
 WARMUP_STEPS=400
-LEARNING_RATE=2.5e-5
+LEARNING_RATE=3e-5
 TYPE=transformer
 NUM_LAYERS=4
 METHOD=rl
@@ -53,6 +53,7 @@ nohup torchrun \
     meta_train_parallel.py \
     --config-name $CONFIG_NAME \
     name=$NAME \
+    mode=iftpwc \
     run.use_gradient_checkpoint=$USE_GRADIENT_CHECKPOINT \
     optim.num_epochs=$NUM_EPOCHS \
     eval.eval_steps=$EVAL_STEPS \
@@ -69,4 +70,4 @@ nohup torchrun \
     metanetwork.method=$METHOD \
     model.lora_r=$LORA_R \
     model.metalora_r=$METALORA_R \
-    > tmp_metatrain_$NAME.txt 2>&1 &
+    > tmp_iftpwc_$NAME.txt 2>&1 &

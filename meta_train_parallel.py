@@ -68,6 +68,7 @@ from utils.myddp import (
     distributed_mean,
     barrier,
 )
+from utils.myloradict import iter_learnable_tensors, merge_loradicts, freeze_loradict, loradict_all_requires_grad
 from utils.myinit import _resolve_device, _import_class
 from collections import OrderedDict
 from typing import Optional, Union, Mapping, Sequence
@@ -421,7 +422,7 @@ def main(cfg: DictConfig):
     torch.set_float32_matmul_precision('high')
     if cfg.run.use_gradient_checkpoint: 
         torch._dynamo.config.optimize_ddp = False
-    if cfg.mode == "train":
+    if cfg.mode in ["train", "iftpwc"]:
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
     
     # ========= DDP init (safe for single-process) =========
@@ -502,23 +503,53 @@ def main(cfg: DictConfig):
         raise ValueError(f"Invalid resume_global_step: {cfg.resume_global_step}")
     
     resume_state = None
+    USE_ADDITIONAL_METALORA = bool(cfg.model.ift_additional_metalora_r >= 0 and cfg.mode == "train")
+    if is_main_process():
+        logger.info(f"USE_ADDITIONAL_METALORA: {USE_ADDITIONAL_METALORA}, r={cfg.model.ift_additional_metalora_r}")
     if resume_dir is not None:
         # Load model & tokenizer
         if is_main_process():
             logger.info(f"Resume mode, loading from {resume_dir}...")
-        metanetwork, metalora = load_checkpoint(metanetwork, resume_dir, device)
+        metanetwork, metalora, ift_additional_metalora = load_checkpoint(metanetwork, resume_dir, device, load_ift_additional_metalora=USE_ADDITIONAL_METALORA, zero_ift_additional_metalora=(cfg.model.ift_additional_metalora_r == 0))
         resume_state = load_training_state(resume_dir)
     else:
-        if cfg.mode == "train":
+        if cfg.mode == "iftpwc":
             try:
                 pretrain_dir = os.path.join("checkpoints", f"{cfg.name}", "pretrain")
                 pretrain_dir = get_latest_checkpoint(pretrain_dir)
-                metanetwork, metalora = load_checkpoint(metanetwork, pretrain_dir, device)
+                metanetwork, metalora, ift_additional_metalora = load_checkpoint(metanetwork, pretrain_dir, device, load_ift_additional_metalora=False)
+                assert USE_ADDITIONAL_METALORA == False, "IFT additional metalora mustn't be used in iftpwc mode."
                 if is_main_process():
                     logger.info(f"Loaded metanetwork from pretrain checkpoint. {pretrain_dir}")
+                    logger.info(f"No additional IFT metalora used.")
             except Exception as e:
                 if is_main_process():
-                    logger.info(f"No pretrain checkpoint found in {pretrain_dir}, initializing metanetwork from scratch.")
+                    logger.info(f"[WARNING][WARNING][WARNING]!!!!!!!!!!!!!!!!!! No pretrain checkpoint found in {pretrain_dir}, initializing metanetwork from scratch.")
+                    logger.info(f"[WARNING][WARNING][WARNING]!!!!!!!!!!!!!!!!!! No pretrain checkpoint found in {pretrain_dir}, initializing metanetwork from scratch.")
+                    logger.info(f"[WARNING][WARNING][WARNING]!!!!!!!!!!!!!!!!!! No pretrain checkpoint found in {pretrain_dir}, initializing metanetwork from scratch.")
+                assert USE_ADDITIONAL_METALORA == False, "IFT additional metalora mustn't be used when no pretrain."
+                metalora = metanetwork.metamodel.init_lora_dict(cfg.model.metalora_r, scale=cfg.metanetwork.transformer_cfg.scale, device=device)
+        elif cfg.mode == "train":
+            try:
+                # pretrain_dir = os.path.join("checkpoints", f"{cfg.name}", "pretrain")
+                pretrain_dir = os.path.join("checkpoints", f"{cfg.name}", "iftpwc")
+                pretrain_dir = get_latest_checkpoint(pretrain_dir)
+                metanetwork, metalora, ift_additional_metalora = load_checkpoint(metanetwork, pretrain_dir, device, load_ift_additional_metalora=False)
+                if USE_ADDITIONAL_METALORA:
+                    freeze_loradict(metalora)
+                    ift_additional_metalora = metanetwork.metamodel.init_lora_dict(cfg.model.ift_additional_metalora_r, scale=cfg.metanetwork.transformer_cfg.scale, device=device) if cfg.model.ift_additional_metalora_r > 0 else None
+                if is_main_process():
+                    logger.info(f"Loaded metanetwork from pretrain checkpoint. {pretrain_dir}")
+                    if USE_ADDITIONAL_METALORA:
+                        logger.info(f"Initialized additional IFT metalora with r={cfg.model.ift_additional_metalora_r} from scratch. Freezing pretrain metalora.")
+                    else:
+                        logger.info(f"No additional IFT metalora used.")
+            except Exception as e:
+                if is_main_process():
+                    logger.info(f"[WARNING][WARNING][WARNING]!!!!!!!!!!!!!!!!!! No pretrain checkpoint found in {pretrain_dir}, initializing metanetwork from scratch.")
+                    logger.info(f"[WARNING][WARNING][WARNING]!!!!!!!!!!!!!!!!!! No pretrain checkpoint found in {pretrain_dir}, initializing metanetwork from scratch.")
+                    logger.info(f"[WARNING][WARNING][WARNING]!!!!!!!!!!!!!!!!!! No pretrain checkpoint found in {pretrain_dir}, initializing metanetwork from scratch.")
+                assert USE_ADDITIONAL_METALORA == False, "IFT additional metalora mustn't be used when no pretrain."
                 metalora = metanetwork.metamodel.init_lora_dict(cfg.model.metalora_r, scale=cfg.metanetwork.transformer_cfg.scale, device=device)
         else:
             # Initialize metalora
@@ -543,26 +574,6 @@ def main(cfg: DictConfig):
         ddp_metanet = metanetwork  # no wrapping in single-process run
 
     # Optimizer & Scheduler
-    def iter_learnable_tensors(tree, prefix="root"):
-        """Yield leaf te nsors with requires_grad=True from nested dict/list/tuple, 
-        and print non-leaf tensor info."""
-        if isinstance(tree, Mapping):
-            for k, v in tree.items():
-                yield from iter_learnable_tensors(v, prefix=f"{prefix}.{k}")
-        elif isinstance(tree, Sequence) and not isinstance(tree, (str, bytes)):
-            for i, v in enumerate(tree):
-                yield from iter_learnable_tensors(v, prefix=f"{prefix}[{i}]")
-        elif torch.is_tensor(tree):
-            if tree.requires_grad:
-                if tree.is_leaf:
-                    yield tree
-                else:
-                    print(f"⚠️ Non-leaf tensor at path '{prefix}': "
-                        f"shape={tuple(tree.shape)}, "
-                        f"grad_fn={tree.grad_fn}")
-                    # optionally still yield it or raise
-                    raise ValueError(f"Found non-leaf tensor at '{prefix}'")
-    # else: ignore other types
     if is_main_process():
         logger.info("Setting up optimizer & scheduler...")
     no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight", "norm.weight", "norm1", "norm2"]
@@ -576,11 +587,30 @@ def main(cfg: DictConfig):
             "weight_decay": 0.0,
         },
         {
-            "params": iter_learnable_tensors(metalora),
+            "params": list(iter_learnable_tensors(metalora) if not USE_ADDITIONAL_METALORA else iter_learnable_tensors(ift_additional_metalora)),
             "weight_decay": cfg.optim.weight_decay,
         }
         # mem_tokens are already part of metanetwork's parameters
-    ]  
+    ]
+    
+    def assert_grouped_params_require_grad(grouped_params):
+        """
+        Assert all params in optimizer param groups have requires_grad=True.
+        """
+        frozen = []
+
+        for gi, group in enumerate(grouped_params):
+            for pi, p in enumerate(group["params"]):
+                if not p.requires_grad:
+                    frozen.append((gi, pi, tuple(p.shape)))
+
+        if frozen:
+            msg = ["Found params with requires_grad=False in grouped_params:"]
+            msg += [f"  - group {gi}, param {pi}, shape={shape}"
+                    for gi, pi, shape in frozen]
+            raise RuntimeError("\n".join(msg))
+    if is_main_process():
+        assert_grouped_params_require_grad(grouped_params)
     
     # Data
     if is_main_process():
@@ -620,13 +650,21 @@ def main(cfg: DictConfig):
         val_ds = GroupedSquadDataset(val_dataset, tokenizer, 512, name="Validation", sep="\n\n")
         train_collator = SquadCollator(tokenizer=tokenizer, conversation_max_length=cfg.data.conversation_max_length, context_max_length=cfg.data.context_max_length, metatrain=True, cfg=cfg)
         val_collator = SquadCollator(tokenizer=tokenizer, conversation_max_length=cfg.data.conversation_max_length, context_max_length=cfg.data.context_max_length, metatrain=True, cfg=cfg)
-    elif cfg.data.source == "ift":
-        data_path = os.path.join("data", "ift_cqa.json")
-        group_idx_path = os.path.join("data", f"ift_cqa_group_idxs_context{cfg.data.context_max_length}_conversation{cfg.data.conversation_max_length}.json")        
-        train_ds = IFTDataset(data_path, group_idx_path, use_exceed=True)
+    # elif cfg.data.source == "ift":
+    #     data_path = os.path.join("data", "ift_cqa.json")
+    #     group_idx_path = os.path.join("data", f"ift_cqa_group_idxs_context{cfg.data.context_max_length}_conversation{cfg.data.conversation_max_length}.json")        
+    #     train_ds = IFTDataset(data_path, group_idx_path, use_exceed=True)
+    #     val_dataset = load_dataset(os.path.join("data", "squad"), split="validation")
+    #     val_dataset = val_dataset.shuffle(seed=42).select(range(1000))
+    #     val_ds = GroupedSquadDataset(val_dataset, tokenizer, 512, name="Validation", sep="<|endoftext|>")
+    #     train_collator = IFTCollator(tokenizer, cfg.data.context_max_length, cfg.data.conversation_max_length, cfg=cfg)
+    #     val_collator = SquadCollator(tokenizer=tokenizer, conversation_max_length=cfg.data.conversation_max_length, context_max_length=cfg.data.context_max_length, metatrain=True, cfg=cfg)
+    elif cfg.data.source == "ift-pwc":
+        data_path = os.path.join("data", "ift_pwc.json")
+        train_ds = IFTC1QADataset(data_path, use_exceed=False, max_context_len=cfg.data.context_max_length, max_conversation_len=cfg.data.conversation_max_length)
         val_dataset = load_dataset(os.path.join("data", "squad"), split="validation")
         val_dataset = val_dataset.shuffle(seed=42).select(range(1000))
-        val_ds = GroupedSquadDataset(val_dataset, tokenizer, 512, name="Validation", sep="<|endoftext|>")
+        val_ds = GroupedSquadDataset(val_dataset, tokenizer, 512, name="Validation", sep="\n\n")
         train_collator = IFTCollator(tokenizer, cfg.data.context_max_length, cfg.data.conversation_max_length, cfg=cfg)
         val_collator = SquadCollator(tokenizer=tokenizer, conversation_max_length=cfg.data.conversation_max_length, context_max_length=cfg.data.context_max_length, metatrain=True, cfg=cfg)
     elif cfg.data.source == "ift-c1qa":
@@ -684,7 +722,14 @@ def main(cfg: DictConfig):
 
 
     # Make sure all ranks see the directory
+    
     if ddp_is_active():
+        if is_main_process():
+            if USE_ADDITIONAL_METALORA:
+                assert loradict_all_requires_grad(metalora, False), "When using additional IFT metalora, the pretrain metalora must be frozen."
+                assert loradict_all_requires_grad(ift_additional_metalora, True), "IFT additional metalora must be learnable."
+            else:
+                assert loradict_all_requires_grad(metalora, True), "Metalora must be learnable."
         dist.barrier()
 
     global_step = 0
@@ -727,12 +772,17 @@ def main(cfg: DictConfig):
             labels = batch["labels"].to(device, non_blocking=True)
             evidence_ids = batch["evidence_ids"].to(device, non_blocking=True)
             evidence_attention_mask = batch["evidence_attention_mask"].to(device, non_blocking=True)
+            
+            if not USE_ADDITIONAL_METALORA:
+                cur_metalora = metalora
+            else:
+                cur_metalora = merge_loradicts(metalora, ift_additional_metalora, method=cfg.metanetwork.method)
 
             with torch.amp.autocast(enabled=(cfg.run.use_amp and device.type == "cuda"), device_type="cuda", dtype=amp_dtype):
                 # Forward through possibly DDP-wrapped metanetwork
                 outputs = ddp_metanet(input_ids=input_ids, input_attention_mask=input_attention_mask, 
                                     evidence_ids=evidence_ids, evidence_attention_mask=evidence_attention_mask, 
-                                    labels=labels, metalora=metalora, use_gradient_checkpoint=cfg.run.use_gradient_checkpoint)
+                                    labels=labels, metalora=cur_metalora, use_gradient_checkpoint=cfg.run.use_gradient_checkpoint)
                 loss = (outputs.loss / max(1, cfg.run.gradient_accumulation_steps)).item()
                 reg_loss = (outputs.reg_loss / max(1, cfg.run.gradient_accumulation_steps)).item()
                 backward_loss = (outputs.loss + outputs.reg_loss) / max(1, cfg.run.gradient_accumulation_steps)
@@ -810,6 +860,7 @@ def main(cfg: DictConfig):
                             ckpt_dir,
                             extra_state={"global_step": global_step},
                             metalora=metalora,
+                            ift_additional_metalora=ift_additional_metalora if USE_ADDITIONAL_METALORA else None,
                         )
                         save_training_state(
                             ckpt_dir,
@@ -823,33 +874,17 @@ def main(cfg: DictConfig):
 
                 # ---- Eval + best checkpoint ----
                 if getattr(cfg.eval, "eval_steps", 0) and global_step % cfg.eval.eval_steps == 0:
-                    eval_metrics = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, metalora=metalora, amp_dtype=amp_dtype)
+                    ###############################TODO add additional metalora handling here###############################
+                    if not USE_ADDITIONAL_METALORA:
+                        cur_metalora = metalora
+                    else:
+                        cur_metalora = merge_loradicts(metalora, ift_additional_metalora, method=cfg.metanetwork.method)
+                    eval_metrics = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, metalora=cur_metalora, amp_dtype=amp_dtype)
                     if writer is not None:
                         writer.add_scalar("eval/loss", eval_metrics["eval_loss"], global_step)
                         writer.add_scalar("eval/ppl", eval_metrics["perplexity"], global_step)
                     if is_main_process():
                         logger.info(f"[Eval @ step {global_step}] loss={eval_metrics['eval_loss']:.4f} ppl={eval_metrics['perplexity']:.2f}")
-
-                    # # Best checkpoint saving on rank 0
-                    # if getattr(cfg.save, "save_best", True) and is_main_process():
-                    #     if eval_metrics["eval_loss"] < best_eval_loss:
-                    #         best_eval_loss = eval_metrics["eval_loss"]
-                    #         best_dir = os.path.join(ckpt_root, "best")
-                    #         logger.info(f"New best model! Saving to {best_dir}")
-                    #         save_checkpoint(
-                    #             ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
-                    #             best_dir,
-                    #             extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss},
-                    #         )
-                    #         save_training_state(
-                    #             best_dir,
-                    #             global_step,
-                    #             epoch,
-                    #             step,
-                    #             best_eval_loss,
-                    #         )
-                    # if ddp_is_active():
-                    #     dist.barrier()
         
         if device.type == "cuda":
             torch.cuda.empty_cache()
@@ -859,8 +894,12 @@ def main(cfg: DictConfig):
         epoch_ppl = math.exp(avg_epoch_loss_world) if avg_epoch_loss_world < 20 else float("inf")
         if is_main_process():
             logger.info(f"Epoch {epoch} done. train_loss={avg_epoch_loss_world:.4f} train_ppl={epoch_ppl:.2f}")
-
-        eval_metrics = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, metalora=metalora, amp_dtype=amp_dtype)
+            
+        if not USE_ADDITIONAL_METALORA:
+            cur_metalora = metalora
+        else:
+            cur_metalora = merge_loradicts(metalora, ift_additional_metalora, method=cfg.metanetwork.method)
+        eval_metrics = evaluate(ddp_metanet, val_loader, device, use_amp=cfg.run.use_amp, metalora=cur_metalora, amp_dtype=amp_dtype)
         if writer is not None:
             writer.add_scalar("eval/loss", eval_metrics["eval_loss"], global_step)
             writer.add_scalar("eval/ppl", eval_metrics["perplexity"], global_step)
@@ -875,6 +914,7 @@ def main(cfg: DictConfig):
                 ckpt_dir,
                 extra_state={"global_step": global_step},
                 metalora=metalora,
+                ift_additional_metalora=ift_additional_metalora if USE_ADDITIONAL_METALORA else None,
             )
             save_training_state(
                 ckpt_dir,
@@ -883,29 +923,6 @@ def main(cfg: DictConfig):
                 step,
                 best_eval_loss,
             )
-        if ddp_is_active():
-            dist.barrier()
-
-        # if getattr(cfg.save, "save_best", True) and is_main_process():
-        #     if eval_metrics["eval_loss"] < best_eval_loss:
-        #         best_eval_loss = eval_metrics["eval_loss"]
-        #         best_dir = os.path.join(ckpt_root, "best")
-        #         logger.info(f"New best model! Saving to {best_dir}")
-        #         save_checkpoint(
-        #             ddp_metanet.module if isinstance(ddp_metanet, DDP) else ddp_metanet,
-        #             best_dir,
-        #             extra_state={"global_step": global_step, "best_eval_loss": best_eval_loss},
-        #             metalora=metalora,
-        #         )
-        #         save_training_state(
-        #             best_dir,
-        #             global_step,
-        #             epoch,
-        #             step,
-        #             best_eval_loss,
-        #         )
-        if ddp_is_active():
-            dist.barrier()
     
     # # Initial eval
     # if resume_dir is None:
@@ -935,6 +952,7 @@ def main(cfg: DictConfig):
             final_dir,
             extra_state={"global_step": global_step},
             metalora=metalora,
+            ift_additional_metalora=ift_additional_metalora if USE_ADDITIONAL_METALORA else None,
         )
 
         if cfg.paths.output_dir:
@@ -945,6 +963,7 @@ def main(cfg: DictConfig):
                 stable_out,
                 extra_state={"global_step": global_step},
                 metalora=metalora,
+                ift_additional_metalora=ift_additional_metalora if USE_ADDITIONAL_METALORA else None,
             )
             logger.info(f"Model saved to {stable_out}")
 
@@ -959,3 +978,4 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
     main()
+

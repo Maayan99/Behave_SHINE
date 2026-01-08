@@ -10,26 +10,25 @@
 #SBATCH -o metalora.out
 #SBATCH -e metalora.err
 
-NAME=8gpu_8lora_128metalora_lr5e-5_grouppretrain_1150
+NAME=8gpu_4lora_4metalora_lr5e-5_grouppretrain_6layer_1270
 NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-8B"
 NUM_EPOCHS=1
-EVAL_STEPS=625
-SAVE_STEPS=625
+EVAL_STEPS=10 # 625
+SAVE_STEPS=10 # 625
 GRADIENT_ACCUMULATION_STEPS=4
 USE_GRADIENT_CHECKPOINT=False
-CONTEXT_MAX_LEN=2380
+CONTEXT_MAX_LEN=2640
 CONVERSATION_MAX_LEN=100
 RESUME_GLOBAL_STEP=latest
 SOURCE=ift-c1qa
 WARMUP_STEPS=400
 LEARNING_RATE=2.5e-5
 TYPE=transformer
-NUM_LAYERS=4
+NUM_LAYERS=6
 METHOD=rl
-LORA_R=8
-METALORA_R=128
+IFT_ADDITIONAL_METALORA_R=0
 
 # Find available port
 while true; do
@@ -67,6 +66,5 @@ nohup torchrun \
     metanetwork.type=$TYPE \
     metanetwork.transformer_cfg.num_layers=$NUM_LAYERS \
     metanetwork.method=$METHOD \
-    model.lora_r=$LORA_R \
-    model.metalora_r=$METALORA_R \
+    model.ift_additional_metalora_r=$IFT_ADDITIONAL_METALORA_R \
     > tmp_metatrain_$NAME.txt 2>&1 &

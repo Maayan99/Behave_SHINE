@@ -140,6 +140,7 @@ class LoraLinear(nn.Linear):
         return self.generate_func(r, scale, plain_tensor)
 
     def init_lora_dict(self, r, scale, device):
+        assert r > 0, "r must be positive"
         A = (torch.randn(size=(1, self.in_features, r), device=device) * sqrt(scale)).detach()
         A.requires_grad_()
         B = torch.zeros(size=(1, r, self.out_features), requires_grad=True, device=device)

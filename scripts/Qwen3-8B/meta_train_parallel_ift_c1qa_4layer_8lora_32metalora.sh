@@ -10,7 +10,7 @@
 #SBATCH -o metalora.out
 #SBATCH -e metalora.err
 
-NAME=8gpu_8lora_128metalora_lr5e-5_grouppretrain_1150
+NAME=8gpu_8lora_32metalora_lr5e-5_grouppretrain_1350
 NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-8B"
@@ -19,7 +19,7 @@ EVAL_STEPS=625
 SAVE_STEPS=625
 GRADIENT_ACCUMULATION_STEPS=4
 USE_GRADIENT_CHECKPOINT=False
-CONTEXT_MAX_LEN=2380
+CONTEXT_MAX_LEN=2820 # 2800 - 2850
 CONVERSATION_MAX_LEN=100
 RESUME_GLOBAL_STEP=latest
 SOURCE=ift-c1qa
@@ -29,7 +29,7 @@ TYPE=transformer
 NUM_LAYERS=4
 METHOD=rl
 LORA_R=8
-METALORA_R=128
+METALORA_R=32
 
 # Find available port
 while true; do

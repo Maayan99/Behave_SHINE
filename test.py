@@ -67,6 +67,7 @@ from utils.myddp import (
     barrier,
 )
 from utils.myinit import _resolve_device, _import_class
+from utils.myloradict import merge_loradicts
 from collections import OrderedDict
 import time
 import re
@@ -384,18 +385,21 @@ def main(cfg: DictConfig):
         if not os.path.isdir(resume_dir):
             raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
     elif isinstance(cfg.test_global_step, str) and cfg.test_global_step.startswith(
-        "checkpoint-epoch-"
+        "epoch-"
     ):
-        resume_dir = os.path.join(ckpt_root, cfg.test_global_step)
+        resume_dir = os.path.join(ckpt_root, f"checkpoint-{cfg.test_global_step}")
         if not os.path.isdir(resume_dir):
             raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
     else:
         raise ValueError(f"Invalid test_global_step: {cfg.test_global_step}")
 
     # Load model
+    USE_ADDITIONAL_METALORA = bool(cfg.model.ift_additional_metalora_r >= 0)
     if is_main_process():
         logger.info(f"Resume mode, loading from {resume_dir}...")
-    metanetwork, metalora = load_checkpoint(metanetwork, resume_dir, device)
+    metanetwork, metalora, ift_additional_metalora = load_checkpoint(metanetwork, resume_dir, device, load_ift_additional_metalora=USE_ADDITIONAL_METALORA, zero_ift_additional_metalora=(cfg.model.ift_additional_metalora_r == 0))
+    if USE_ADDITIONAL_METALORA:
+        metalora = merge_loradicts(metalora, ift_additional_metalora)
 
     # Data
     if is_main_process():

@@ -9,20 +9,23 @@ from utils.mylogging import get_logger
 from utils.myfreeze import freeze
 from torch.utils.data import DataLoader
 import time
+from utils.myloradict import freeze_loradict
 
 logger = get_logger("save & load")
 
-def save_checkpoint(metanetwork, out_dir: str, metalora: Any, extra_state: Dict[str, Any] = None):
+def save_checkpoint(metanetwork, out_dir: str, metalora: Any, ift_additional_metalora: Any = None, extra_state: Dict[str, Any] = None):
     os.makedirs(out_dir, exist_ok=True)
     if metanetwork.metamodel.model.use_mem_token:
         torch.save(metanetwork.metamodel.model.mem_tokens, os.path.join(out_dir, "mem_tokens.pt"))
     torch.save(metanetwork.metanetwork.state_dict(), os.path.join(out_dir, "metanetwork.pth"))
     torch.save(metalora, os.path.join(out_dir, "metalora.pth"))
+    if ift_additional_metalora is not None:
+        torch.save(ift_additional_metalora, os.path.join(out_dir, "ift_additional_metalora.pth"))
     if extra_state is not None:
         with open(os.path.join(out_dir, "trainer_state.json"), "w", encoding="utf-8") as f:
             json.dump(extra_state, f, ensure_ascii=False, indent=2)
 
-def load_checkpoint(metanetwork, in_dir, device: str):
+def load_checkpoint(metanetwork, in_dir, device: str, load_ift_additional_metalora: bool = False, zero_ift_additional_metalora: bool = False):
     metanetwork.to("cpu")
     if metanetwork.metamodel.model.use_mem_token:
         saved_mem_tokens = torch.load(os.path.join(in_dir, "mem_tokens.pt"), map_location="cpu", weights_only=False)
@@ -33,7 +36,17 @@ def load_checkpoint(metanetwork, in_dir, device: str):
     metanetwork.to(device)
     metalora = move_to_device_and_change_into_leaf(metalora, device)
     freeze(metanetwork.metamodel)
-    return metanetwork, metalora
+    ift_additional_metalora_path = os.path.join(in_dir, "ift_additional_metalora.pth")
+    if os.path.isfile(ift_additional_metalora_path):
+        assert load_ift_additional_metalora and not zero_ift_additional_metalora, "Found ift_additional_metalora.pth but load_ift_additional_metalora is False"
+        ift_additional_metalora = torch.load(ift_additional_metalora_path, map_location="cpu", weights_only=False)
+        ift_additional_metalora = move_to_device_and_change_into_leaf(ift_additional_metalora, device)
+        freeze_loradict(metalora)
+    else:
+        assert not load_ift_additional_metalora or zero_ift_additional_metalora, "ift_additional_metalora.pth not found but load_ift_additional_metalora is True"
+        if zero_ift_additional_metalora:
+            freeze_loradict(metalora)
+    return metanetwork, metalora, ift_additional_metalora if (load_ift_additional_metalora and not zero_ift_additional_metalora) else None
 
 def _rng_state_dict():
     state = {

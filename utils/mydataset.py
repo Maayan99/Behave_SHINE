@@ -421,6 +421,7 @@ class IFTDataset(Dataset):
         for conv in conversations:
             final_conversation.extend(conv)
         return {"evidence": final_context, "conversations": final_conversation}
+    
 
 class IFTC1QADataset(Dataset):
     def __init__(
