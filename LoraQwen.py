@@ -146,6 +146,13 @@ class LoraLinear(nn.Linear):
         B = torch.zeros(size=(1, r, self.out_features), requires_grad=True, device=device)
         C = torch.zeros(size=(1, self.out_features), requires_grad=True, device=device) if self.bias is not None else None
         return {"A": A, "B": B, "C": C}
+    
+    def divide_idx(self, r, idx_start):
+        A_numel = self.in_features * r
+        B_numel = self.out_features * r
+        assert self.bias is None
+        idx_range = [idx_start, A_numel + idx_start]
+        return idx_range, A_numel + B_numel + idx_start
 
 # class LoraLinear(nn.Linear):
 #     def __init__(self, in_features, out_features, bias = True, device=None, dtype=None):
@@ -272,7 +279,16 @@ class LoraQwen3MLP(Qwen3MLP):
         up = self.up_proj.init_lora_dict(r, scale, device)
         down = self.down_proj.init_lora_dict(r, scale, device)
         return {"gate": gate, "up": up, "down": down}
-
+    
+    def divide_idx(self, r, idx_start):
+        idx_range = []
+        idx_range_gate, next_start = self.gate_proj.divide_idx(r, idx_start)
+        idx_range += idx_range_gate
+        idx_range_up, next_start = self.up_proj.divide_idx(r, next_start)
+        idx_range += idx_range_up
+        idx_range_down, next_start = self.down_proj.divide_idx(r, next_start)
+        idx_range += idx_range_down
+        return idx_range, next_start
 
 class LoraQwen3Attention(Qwen3Attention):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
@@ -380,6 +396,18 @@ class LoraQwen3Attention(Qwen3Attention):
         v = self.v_proj.init_lora_dict(r, scale, device)
         o = self.o_proj.init_lora_dict(r, scale, device)
         return {"q": q, "k": k, "v": v, "o": o}
+    
+    def divide_idx(self, r, idx_start):
+        idx_range = []
+        idx_range_q, next_start = self.q_proj.divide_idx(r, idx_start)
+        idx_range += idx_range_q
+        idx_range_k, next_start = self.k_proj.divide_idx(r, next_start)
+        idx_range += idx_range_k
+        idx_range_v, next_start = self.v_proj.divide_idx(r, next_start)
+        idx_range += idx_range_v
+        idx_range_o, next_start = self.o_proj.divide_idx(r, next_start)
+        idx_range += idx_range_o
+        return idx_range, next_start
     
 class Qwen3DecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: Qwen3Config, layer_idx: int):
@@ -494,6 +522,14 @@ class LoraQwen3DecoderLayer(Qwen3DecoderLayer):
 
     def init_lora_dict(self, r, scale, device):
         return {"attention": self.self_attn.init_lora_dict(r, scale, device), "mlp": self.mlp.init_lora_dict(r, scale, device)}
+    
+    def divide_idx(self, r, idx_start):
+        idx_range = []
+        idx_range_attn, next_start = self.self_attn.divide_idx(r, idx_start)
+        idx_range += idx_range_attn
+        idx_range_mlp, next_start = self.mlp.divide_idx(r, next_start)
+        idx_range += idx_range_mlp
+        return idx_range, next_start
 
 @auto_docstring
 class Qwen3PreTrainedModel(PreTrainedModel):
@@ -707,6 +743,9 @@ class LoraQwen3Model(Qwen3PreTrainedModel):
             loradict[i] = layer.init_lora_dict(r, scale, device)
         return loradict
     
+    def divide_idx(self, r, idx_start):
+        return self.layers[0].divide_idx(r, idx_start)
+    
 @dataclass
 class MemoryCausalLMOutputWithPast(CausalLMOutputWithPast):
     '''
@@ -899,6 +938,9 @@ class LoraQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def init_lora_dict(self, r, scale, device):
         return self.model.init_lora_dict(r, scale, device)
+    
+    def divide_idx(self, r, idx_start):
+        return self.model.divide_idx(r, idx_start)
 
 if __name__ == "__main__":
     config_path = "./models/Qwen3-0.6B"

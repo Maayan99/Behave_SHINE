@@ -495,8 +495,8 @@ def main(cfg: DictConfig):
         resume_dir = os.path.join(ckpt_root, f"checkpoint-{cfg.resume_global_step}")
         if not os.path.isdir(resume_dir):
             raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
-    elif isinstance(cfg.resume_global_step, str) and cfg.resume_global_step.startswith("checkpoint-epoch-"):
-        resume_dir = os.path.join(ckpt_root, cfg.resume_global_step)
+    elif isinstance(cfg.resume_global_step, str) and cfg.resume_global_step.startswith("epoch-"):
+        resume_dir = os.path.join(ckpt_root, f"checkpoint-{cfg.resume_global_step}")
         if not os.path.isdir(resume_dir):
             raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
     else:
@@ -533,7 +533,7 @@ def main(cfg: DictConfig):
             try:
                 # pretrain_dir = os.path.join("checkpoints", f"{cfg.name}", "pretrain")
                 pretrain_dir = os.path.join("checkpoints", f"{cfg.name}", "iftpwc")
-                pretrain_dir = get_latest_checkpoint(pretrain_dir)
+                pretrain_dir = get_latest_checkpoint(pretrain_dir, only_epoch=True)
                 metanetwork, metalora, ift_additional_metalora = load_checkpoint(metanetwork, pretrain_dir, device, load_ift_additional_metalora=False)
                 if USE_ADDITIONAL_METALORA:
                     freeze_loradict(metalora)

@@ -3,9 +3,22 @@ import torch.nn.functional as F
 import torch.nn as nn
 import weakref
 import os
+from utils.myddp import is_main_process, barrier
+
+def generate_couple_mask(idx_range, couple_hidden_size, couple_num_tokens):
+    mask = torch.ones((couple_num_tokens, couple_num_tokens), dtype=torch.bool)
+    assert idx_range[-1] == couple_num_tokens * couple_hidden_size, "idx_range does not match couple_num_tokens and couple_hidden_size"
+    tmp_idx_range = []
+    for i in range(len(idx_range)):
+        assert idx_range[i] % couple_hidden_size == 0, "idx_range must be divisible by couple_hidden_size"
+        tmp_idx_range.append(idx_range[i] // couple_hidden_size)
+    for i in range(0, len(idx_range) - 1, 2):
+        mask[tmp_idx_range[i]:tmp_idx_range[i+1], tmp_idx_range[i+1]:tmp_idx_range[i+2]] = False
+        mask[tmp_idx_range[i+1]:tmp_idx_range[i+2], tmp_idx_range[i]:tmp_idx_range[i+1]] = False
+    return mask
 
 class MetanetworkTransformer(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, cfg, idx_range):
         super().__init__()
         self.num_layers = cfg.num_layers
         self.num_mem_token = cfg.num_mem_token
@@ -17,6 +30,14 @@ class MetanetworkTransformer(nn.Module):
 
         transformer_cfg = cfg.metanetwork.transformer_cfg
         self.transformer_layers = nn.ModuleList([nn.TransformerEncoderLayer (**transformer_cfg.encoder_cfg) for _ in range(transformer_cfg.num_layers)])
+        
+        self.couple_layers = nn.ModuleList([nn.TransformerEncoderLayer (**transformer_cfg.couple_encoder_cfg) for _ in range(transformer_cfg.couple_num_layers)])
+        self.couple_hidden_size = cfg.metanetwork.transformer_cfg.couple_encoder_cfg.d_model
+        self.couple_num_layers = cfg.metanetwork.transformer_cfg.couple_num_layers
+        assert self.hidden_size % self.couple_hidden_size == 0, "hidden_size must be divisible by couple_hidden_size"
+        self.couple_num_tokens = self.num_mem_token * self.hidden_size // self.couple_hidden_size
+        couple_mask = generate_couple_mask(idx_range, self.couple_hidden_size, self.couple_num_tokens)
+        self.register_buffer("couple_mask", couple_mask, persistent=False)
         
         # self.scale = nn.Parameter(torch.ones((1, self.num_layers, self.num_mem_token, 1)), requires_grad=True)
         
@@ -32,43 +53,13 @@ class MetanetworkTransformer(nn.Module):
                 memory_states = self.transformer_layers[i](memory_states.transpose(1, 2).flatten(0, 1)).unflatten(0, (batch_size, self.num_mem_token)).transpose(1, 2) # exchange information among layers
             else:
                 memory_states = self.transformer_layers[i](memory_states.flatten(0, 1)).unflatten(0, (batch_size, self.num_layers)) # exchange information among tokens
-        # memory_states = memory_states * self.scale
-        memory_states = torch.mean(memory_states.unflatten(2, (self.mean_pool_size, self.num_mem_token // self.mean_pool_size)), dim=2)  # mean pool
-        return memory_states.flatten(1, -1)
-
-# class MetanetworkTransformer(nn.Module):
-#     def __init__(self, cfg):
-#         super().__init__()
-#         self.num_layers = cfg.num_layers
-#         self.num_mem_token = cfg.num_mem_token
-#         self.hidden_size = cfg.hidden_size
-#         self.mean_pool_size = cfg.metanetwork.transformer_cfg.mean_pool_size
-
-#         self.layer_pe = nn.Parameter(torch.zeros((self.num_layers, self.hidden_size)), requires_grad=True)
-#         self.token_pe = nn.Parameter(torch.zeros((self.num_mem_token, self.hidden_size)), requires_grad=True)
-
-#         transformer_cfg = cfg.metanetwork.transformer_cfg
-#         self.transformer_layers = nn.ModuleList([nn.TransformerEncoderLayer (**transformer_cfg.encoder_cfg) for _ in range(transformer_cfg.num_layers)])
+        memory_states = torch.mean(memory_states.unflatten(2, (self.mean_pool_size, self.num_mem_token // self.mean_pool_size)), dim=2)  # mean pool, not used.
+        memory_states = memory_states.view(batch_size * self.num_layers, -1, self.couple_hidden_size)
+        for i in range(len(self.couple_layers)):
+            memory_states = self.couple_layers[i](memory_states, src_mask = self.couple_mask)
+        memory_states = memory_states.view(batch_size, -1)
+        return memory_states
         
-#         self.scale = nn.Parameter(torch.ones((1, self.num_layers, self.num_mem_token, 1)), requires_grad=True)
-#         self.use_final_bias = transformer_cfg.use_final_bias
-#         if self.use_final_bias:
-#             self.bias = nn.Parameter(torch.zeros((1, self.num_layers, self.num_mem_token // self.mean_pool_size, self.hidden_size)), requires_grad=True)
-        
-
-#     def forward(self, memory_states:torch.Tensor) -> dict:
-#         '''
-#         memory_states: (batch_size, num_layer, num_mem_token, hidden_size)
-#         '''
-#         memory_states = memory_states + self.layer_pe.unsqueeze(-2) + self.token_pe # apply PE
-#         batch_size = memory_states.shape[0]
-#         for i in range(len(self.transformer_layers)):
-#             memory_states = self.transformer_layers[i](memory_states.flatten(0, 1)).unflatten(0, (batch_size, self.num_layers)) # exchange information among tokens
-#         memory_states = memory_states * self.scale
-#         memory_states = torch.mean(memory_states.unflatten(2, (self.mean_pool_size, self.num_mem_token // self.mean_pool_size)), dim=2)  # mean pool
-#         if self.use_final_bias:
-#             memory_states += self.bias
-#         return memory_states.flatten(1, -1)
 
 class MetanetworkLinear(nn.Module):
     def __init__(self, cfg):
@@ -130,12 +121,14 @@ class Metanetwork(nn.Module):
         self.lora_r = cfg.model.lora_r
         self.output_dim = output_dim
         self.metamodel = metamodel
+        self.idx_range, end = self.metamodel.divide_idx(self.lora_r, 0)
+        self.idx_range.append(end)
         self.adapter_reg = cfg.optim.adapter_reg
         self.method = cfg.metanetwork.method
         self.metamodel.set_generate_func(self.method)
         
         if cfg.metanetwork.type == "transformer":
-            self.metanetwork = MetanetworkTransformer(cfg)
+            self.metanetwork = MetanetworkTransformer(cfg, self.idx_range)
             self.scale = cfg.metanetwork.transformer_cfg.scale
         elif cfg.metanetwork.type == "linear":
             self.metanetwork = MetanetworkLinear(cfg)
@@ -171,5 +164,6 @@ class Metanetwork(nn.Module):
         plain_output = self.metanetwork(memory_states)  # (batch_size, output_dim)
         loradict = self.metamodel.generate_lora_dict(self.lora_r, scale=self.scale, plain_tensor=plain_output)
         return loradict if not return_plain else (loradict, plain_output)
-        
+    
+    
     

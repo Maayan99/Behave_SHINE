@@ -603,6 +603,10 @@ def main(cfg: DictConfig):
         resume_dir = os.path.join(ckpt_root, f"checkpoint-{cfg.test_global_step}")
         if not os.path.isdir(resume_dir):
             raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
+    elif isinstance(cfg.test_global_step, str) and cfg.test_global_step.startswith("epoch-"):
+        resume_dir = os.path.join(ckpt_root, f"checkpoint-{cfg.test_global_step}")
+        if not os.path.isdir(resume_dir):
+            raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
     elif isinstance(cfg.test_global_step, str) and cfg.test_global_step.startswith(
         "checkpoint-epoch-"
     ):

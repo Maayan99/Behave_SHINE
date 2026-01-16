@@ -103,10 +103,12 @@ def load_training_state(
     }
 
 
-def get_latest_checkpoint(root_dir: str) -> str:
+def get_latest_checkpoint(root_dir: str, only_epoch=False) -> str:
     if not os.path.isdir(root_dir):
         return None
     cands = [d for d in os.listdir(root_dir) if d.startswith("checkpoint-")]
+    if only_epoch:
+        cands = [d for d in cands if "epoch" in d]
     if not cands:
         return None
     steps = []

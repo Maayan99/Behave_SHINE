@@ -4,7 +4,7 @@
 #SBATCH -p IAI_SLURM_HGX
 #SBATCH --qos=16gpu-hgx
 #SBATCH -N 1
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:8
 #SBATCH --time=48:00:00
 #SBATCH -c 64
 #SBATCH -o metalora.out
@@ -22,13 +22,15 @@ USE_GRADIENT_CHECKPOINT=False
 RESUME_GLOBAL_STEP=latest   # -1: don't resume,   int: resume from global steps,  latest: resume from latest
 LEARNING_RATE=5e-5
 TYPE=transformer
-CONVERSATION_MAX_LEN=1010
-CONTEXT_MAX_LEN=1001
-NUM_LAYERS=4
+CONVERSATION_MAX_LEN=1050
+CONTEXT_MAX_LEN=1041
+NUM_LAYERS=2
+COUPLE_NUM_LAYERS=2
+
 WARMUP_STEPS=200
 METHOD=rl
-LORA_R=16
-METALORA_R=16
+LORA_R=8
+METALORA_R=128
 
 # Find available port
 while true; do
@@ -68,4 +70,5 @@ nohup torchrun \
     metanetwork.method=$METHOD \
     model.lora_r=$LORA_R \
     model.metalora_r=$METALORA_R \
+    metanetwork.transformer_cfg.couple_num_layers=$COUPLE_NUM_LAYERS \
     > tmp_pretrain_$NAME.txt 2>&1 &

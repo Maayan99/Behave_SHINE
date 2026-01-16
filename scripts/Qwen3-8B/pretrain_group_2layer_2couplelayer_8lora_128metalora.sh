@@ -10,7 +10,7 @@
 #SBATCH -o metalora.out
 #SBATCH -e metalora.err
 
-NAME=8gpu_16lora_16metalora_lr5e-5_grouppretrain_1110 # 4layer
+NAME=8gpu_8lora_128metalora_lr5e-5_grouppretrain_2layer_2couplelayer_1150 # 4layer
 NUM_GPUS=8
 MASTER_PORT=18920       
 CONFIG_NAME="Qwen3-8B"       
@@ -21,14 +21,15 @@ GRADIENT_ACCUMULATION_STEPS=4
 USE_GRADIENT_CHECKPOINT=False
 RESUME_GLOBAL_STEP=latest   # -1: don't resume,   int: resume from global steps,  latest: resume from latest
 LEARNING_RATE=5e-5
-CONVERSATION_MAX_LEN=1110   # Extra base len: 0 Extra chat len per turn: 11
+CONVERSATION_MAX_LEN=1150 # 1160   # Extra base len: 0 Extra chat len per turn: 11
 CONTEXT_MAX_LEN=$((CONVERSATION_MAX_LEN - 9)) # $((CONVERSATION_MAX_LEN - 10))
 TYPE=transformer
-NUM_LAYERS=4
+NUM_LAYERS=2
+COUPLE_NUM_LAYERS=2
 WARMUP_STEPS=200
 METHOD=rl
-LORA_R=16
-METALORA_R=16
+LORA_R=8
+METALORA_R=128
 
 # Find available port
 while true; do
@@ -62,6 +63,7 @@ python generate_group_idx.py  \
     metanetwork.method=$METHOD \
     model.lora_r=$LORA_R \
     model.metalora_r=$METALORA_R \
+    metanetwork.transformer_cfg.couple_num_layers=$COUPLE_NUM_LAYERS \
     > tmp_pretrain_$NAME.txt 2>&1
 
 wait
@@ -91,4 +93,5 @@ nohup torchrun \
     metanetwork.method=$METHOD \
     model.lora_r=$LORA_R \
     model.metalora_r=$METALORA_R \
+    metanetwork.transformer_cfg.couple_num_layers=$COUPLE_NUM_LAYERS \
     > tmp_pretrain_$NAME.txt 2>&1 &

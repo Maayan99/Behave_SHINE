@@ -28,5 +28,5 @@ squad_text_length_distribution.png
 squad_context_length_distribution.png
 squad_question_length_distribution.png
 *.jsonl
-data_preprocess
+data_preprocess/*.jsonl
 checkpoints_oldchatlen

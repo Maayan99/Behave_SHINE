@@ -10,16 +10,18 @@
 #SBATCH -o test.out
 #SBATCH -e test.err
 
-NAME=8gpu_4lora_4metalora_lr5e-5_grouppretrain_1450
-NUM_GPUS=4
+NAME=8gpu_8lora_128metalora_lr5e-5_grouppretrain_1150
+NUM_GPUS=8
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-8B"       
 TEST_BATCH_SIZE=4
 TEST_GLOBAL_STEP=latest
 TEST_SOURCE=wikitext
+MAX_NEW_TOKENS=1100
 NUM_LAYERS=4
 METHOD=rl
-MAX_NEW_TOKENS=1100
+LORA_R=8
+METALORA_R=128
         
 
 # Find available port
@@ -50,4 +52,6 @@ nohup torchrun \
     metanetwork.transformer_cfg.num_layers=$NUM_LAYERS \
     metanetwork.method=$METHOD \
     test.max_new_tokens=$MAX_NEW_TOKENS \
+    model.lora_r=$LORA_R \
+    model.metalora_r=$METALORA_R \
     > tmp_test_pretrain_$NAME.txt 2>&1 &
