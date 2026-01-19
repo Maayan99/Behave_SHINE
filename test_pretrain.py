@@ -82,18 +82,18 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.backends.cuda.matmul.allow_tf32 = True
 
 
-def exact_prefix_match_ratio(a: List[int], b: List[int]) -> float:
+def exact_prefix_match_ratio(ref: List[int], hyp: List[int]) -> float:
     """
     If both have m tokens and first mismatch is at position n (0-based),
     exact match ratio = n / m. If identical, = 1.0
     """
-    if len(a) != len(b):
-        raise ValueError(f"Sequences must have same length, got {len(a)} vs {len(b)}")
-    m = len(a)
+    if len(ref) < len(hyp):
+        raise ValueError(f"ref length must be >= hyp length, got {len(ref)} < {len(hyp)}")
+    m = len(ref)
     if m == 0:
         return 1.0
     n = 0
-    for x, y in zip(a, b):
+    for x, y in zip(ref, hyp):
         if x != y:
             break
         n += 1
@@ -305,14 +305,14 @@ def test_and_save(
             else:
                 hyp = list(map(int, hyp))
             
-            if is_main_process():
-                print("token nums:", token_nums[i].item())
-            debug_print_ids(ground_truths_ids[i], "ground_truth_ids", tokenizer)
-            debug_print_ids(gen_out[i], "gen_out", tokenizer)
-            debug_print_ids(ref, "ref", tokenizer)
-            debug_print_ids(hyp, "hyp", tokenizer)
-            barrier()
-            exit()
+            # if is_main_process():
+            #     print("token nums:", token_nums[i].item())
+            # debug_print_ids(ground_truths_ids[i], "ground_truth_ids", tokenizer)
+            # debug_print_ids(gen_out[i], "gen_out", tokenizer)
+            # debug_print_ids(ref, "ref", tokenizer)
+            # debug_print_ids(hyp, "hyp", tokenizer)
+            # barrier()
+            # exit()
 
             em = exact_prefix_match_ratio(ref, hyp)
 
