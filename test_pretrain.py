@@ -310,7 +310,9 @@ def test_and_save(
             debug_print_ids(ground_truths_ids[i], "ground_truth_ids", tokenizer)
             debug_print_ids(gen_out[i], "gen_out", tokenizer)
             debug_print_ids(ref, "ref", tokenizer)
-            debug_print_ids(hyp, "hyp", tokenizer, exitall=True)
+            debug_print_ids(hyp, "hyp", tokenizer)
+            barrier()
+            exit()
 
             em = exact_prefix_match_ratio(ref, hyp)
 
