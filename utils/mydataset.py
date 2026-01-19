@@ -686,8 +686,16 @@ class TestPretrainCollator(BaseCollator):
         )
         evidence_ids = evidence_enc["input_ids"]
         evidence_attention_mask = evidence_enc["attention_mask"]
-        answer_ids = evidence_ids
-        answer_attention_mask = evidence_attention_mask
+        
+        answer_enc = self.tokenizer(
+            answer_texts,
+            max_length=self.context_max_length,
+            truncation=True,
+            return_tensors="pt",
+            padding="max_length",
+        )
+        answer_ids = answer_enc["input_ids"]
+        answer_attention_mask = answer_enc["attention_mask"]
 
         input_enc = self.tokenizer.apply_chat_template(
                 messages,

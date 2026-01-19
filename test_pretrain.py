@@ -67,59 +67,21 @@ from utils.myddp import (
     barrier,
 )
 from utils.myinit import _resolve_device, _import_class
-import time
 import re
 from collections import OrderedDict, Counter
+
+# ===================== (matplotlib for visualization) =====================
+import matplotlib
+matplotlib.use("Agg")  # headless-friendly
+import matplotlib.pyplot as plt
+# ==========================================================================
 
 logger = get_logger("test")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.backends.cuda.matmul.allow_tf32 = True
 
-import math
-from collections import Counter
-from typing import Sequence, Dict, Any
 
-def _ngrams(seq: Sequence[int], n: int):
-    return [tuple(seq[i:i+n]) for i in range(0, len(seq) - n + 1)]
-
-def _modified_precision(ref: Sequence[int], hyp: Sequence[int], n: int) -> float:
-    hyp_ngrams = Counter(_ngrams(hyp, n))
-    ref_ngrams = Counter(_ngrams(ref, n))
-    if not hyp_ngrams:
-        return 0.0
-    clipped = sum(min(count, ref_ngrams[ng]) for ng, count in hyp_ngrams.items())
-    total = sum(hyp_ngrams.values())
-    return clipped / total if total > 0 else 0.0
-
-def _brevity_penalty(ref_len: int, hyp_len: int) -> float:
-    if hyp_len == 0:
-        return 0.0
-    if hyp_len > ref_len:
-        return 1.0
-    return math.exp(1.0 - (ref_len / hyp_len))
-
-def bleu_n(ref: Sequence[int], hyp: Sequence[int], max_n: int = 4, smooth: float = 1e-9) -> Dict[int, float]:
-    """
-    Returns BLEU-1..BLEU-max_n using geometric mean of precisions up to n.
-    'smooth' avoids log(0) when a precision is 0.
-    """
-    ref_len, hyp_len = len(ref), len(hyp)
-    bp = _brevity_penalty(ref_len, hyp_len)
-
-    precisions = {n: _modified_precision(ref, hyp, n) for n in range(1, max_n + 1)}
-
-    bleu_scores = {}
-    for n in range(1, max_n + 1):
-        # geometric mean of p1..pn
-        log_sum = 0.0
-        for k in range(1, n + 1):
-            pk = precisions[k]
-            log_sum += math.log(max(pk, smooth))
-        geo_mean = math.exp(log_sum / n)
-        bleu_scores[n] = bp * geo_mean
-    return bleu_scores
-
-def exact_prefix_match_ratio(a: Sequence[int], b: Sequence[int]) -> float:
+def exact_prefix_match_ratio(a: List[int], b: List[int]) -> float:
     """
     If both have m tokens and first mismatch is at position n (0-based),
     exact match ratio = n / m. If identical, = 1.0
@@ -136,31 +98,12 @@ def exact_prefix_match_ratio(a: Sequence[int], b: Sequence[int]) -> float:
         n += 1
     return n / m
 
-def compare_token_seqs(seq0: Sequence[int], seq1: Sequence[int], max_bleu_n: int = 4) -> Dict[str, Any]:
-    """
-    Compares two same-length token sequences:
-      - exact prefix match ratio
-      - bleu-1..bleu-max_bleu_n (seq0 as reference, seq1 as hypothesis)
-    """
-    if len(seq0) != len(seq1):
-        raise ValueError(f"Sequences must have same length, got {len(seq0)} vs {len(seq1)}")
-
-    exact = exact_prefix_match_ratio(seq0, seq1)
-    bleu_scores = bleu_n(seq0, seq1, max_n=max_bleu_n)
-
-    return {
-        "length": len(seq0),
-        "exact_prefix_match": exact,
-        "bleu": {f"bleu_{n}": bleu_scores[n] for n in range(1, max_bleu_n + 1)},
-    }
 
 def extract_think_and_answer(text: str) -> Tuple[str, str]:
     """
     Splits model output into (think_part, answer_part).
     If no valid <think>...</think> block exists, think = "".
     """
-
-    # Normalize for searching
     lower = text.lower()
     start_tag = "<think>"
     end_tag = "</think>"
@@ -172,14 +115,13 @@ def extract_think_and_answer(text: str) -> Tuple[str, str]:
     start = lower.find(start_tag)
     end = lower.find(end_tag)
     if start != -1 and end != -1 and end > start:
-        think = text[start + len(start_tag) : end].strip()
-        answer = text[end + len(end_tag) :].strip()
-
+        think = text[start + len(start_tag): end].strip()
+        answer = text[end + len(end_tag):].strip()
     else:
         # ---- Case 2: No valid think block → think = "" ----
         # Remove any malformed or inline think tags from final answer
         answer = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
-        think = ""  # force empty
+        think = ""
 
     # ---- Clean common prefixes like "Answer:" or "Final answer:" ----
     answer = re.sub(r"^(final answer|answer)\s*:\s*", "", answer, flags=re.IGNORECASE).strip()
@@ -211,14 +153,10 @@ def test_and_save(
     support resuming from partial output, and finally gather & save a merged
     JSON file on rank 0.
 
-    Resumability:
-      - Per rank we keep an intermediate file:
-          {cfg.test.save_path}/{cfg.test.source}/{split_name}.rank{rank}.jsonl
-      - Every written record has a monotonically increasing `sample_idx`.
-      - On resume, we read this file, find the max existing `sample_idx`,
-        and skip earlier samples in the DataLoader.
-      - Final merged file {split_name}{output_suffix} does NOT contain
-        `sample_idx`; it’s only used for resuming and ordering.
+    Metrics retained:
+      - mean_loss (saved in summary)
+      - PPL (computed from mean_loss => exp(mean_loss))
+      - EM  (here: exact_prefix_match_ratio averaged over samples)
     """
 
     if use_metanet:
@@ -282,20 +220,16 @@ def test_and_save(
 
         evidences = batch["evidence"]
         evidence_ids = batch["evidence_ids"].to(device, non_blocking=True)
-        evidence_attention_mask = batch["evidence_attention_mask"].to(
-            device, non_blocking=True
-        )
+        evidence_attention_mask = batch["evidence_attention_mask"].to(device, non_blocking=True)
         input_ids = batch["input_ids"].to(device, non_blocking=True)
-        input_attention_mask = batch["input_attention_mask"].to(
-            device, non_blocking=True
-        )
+        input_attention_mask = batch["input_attention_mask"].to(device, non_blocking=True)
         ground_truths = batch["answers"]
         ground_truths_ids = batch["answer_ids"]
         questions = batch["questions"]
         labels = batch["labels"].to(device, non_blocking=True)
         full_input_ids = batch["full_input_ids"].to(device, non_blocking=True)
         full_input_attention_mask = batch["full_input_attention_mask"].to(device, non_blocking=True)
-        
+
         outputs = metanet(
             input_ids=full_input_ids,
             input_attention_mask=full_input_attention_mask,
@@ -318,15 +252,6 @@ def test_and_save(
         loss_per_token = loss_per_token * mask
         token_nums = mask[:, :-2].sum(dim=1)
         loss_per_sample = loss_per_token[:, :-2].sum(dim=1) / token_nums
-        # res = ""
-        # res = f"evidence\n"
-        # for j in range(len(evidence_ids[0])):
-        #     res = f"{res}token_idx: {j}, token: {tokenizer.decode(evidence_ids[0][j].unsqueeze(0))}, id: {evidence_ids[0][j].item()}, attn_mask: {evidence_attention_mask[0][j].item()}\n"
-        # for i in range(batch_size):
-        #     res = f"{res}\n\nbatch_idx: {i}"
-        #     for j in range(len(labels[i]) - 1):
-        #         res = f"{res}\ntoken_idx: {j}, token: {tokenizer.decode(full_input_ids[i][j].unsqueeze(0))}, input{full_input_ids[i][j].item()}, attn_mask: {full_input_attention_mask[i][j].item()}, label: {labels[i][j].item()}, loss: {loss_per_token[i][j].item():.4f}"       
-        #     break
 
         loradict = None
         if use_metanet:
@@ -342,16 +267,11 @@ def test_and_save(
             ignore_mem_token=True,
             max_new_tokens=cfg.test.max_new_tokens,
             do_sample=False,
-            # num_beams=4,          # >1 turns on beam search
-            # early_stopping=True,  # optional: stop when beams are finished
+            # num_beams=4,
+            # early_stopping=True,
         )
-        
+
         gen_out = gen_out[:, 9:].to("cpu")
-        
-        # for idx, i in enumerate(gen_out[0][:token_nums[0]]):
-        #     res = f"{res}\ngenerated token {idx}: {tokenizer.decode(i.unsqueeze(0))}, id: {i.item()}, evidence token {tokenizer.decode(evidence_ids[0][-token_nums[0] + idx].unsqueeze(0))}, evidence id: {evidence_ids[0][-token_nums[0] + idx].item()}, "
-        # print(res)
-        # exit()
 
         input_lens = input_attention_mask.sum(dim=1).tolist()
         input_ids_cpu = input_ids.to("cpu")
@@ -367,20 +287,30 @@ def test_and_save(
                 input_ids_cpu[i][-input_lens[i]:], skip_special_tokens=True
             )
             think, answer = extract_think_and_answer(full_text)
-            
-            t = int(token_nums[i].item())  # make sure it's a python int
+
+            t = int(token_nums[i].item())  # python int
 
             ref = ground_truths_ids[i][-t:]
             hyp = gen_out[i][:t]
 
             # convert to list[int]
-            if torch.is_tensor(ref): ref = ref.tolist()
-            else: ref = list(map(int, ref))
+            if torch.is_tensor(ref):
+                ref = ref.tolist()
+            else:
+                ref = list(map(int, ref))
 
-            if torch.is_tensor(hyp): hyp = hyp.tolist()
-            else: hyp = list(map(int, hyp))
+            if torch.is_tensor(hyp):
+                hyp = hyp.tolist()
+            else:
+                hyp = list(map(int, hyp))
 
-            statistics = compare_token_seqs(ref, hyp, max_bleu_n=4)
+            em = exact_prefix_match_ratio(ref, hyp)
+
+            statistics = {
+                "length": len(ref),
+                "em": em,
+                "exact_prefix_match": em,  # keep old key for compatibility if needed
+            }
 
             record = {
                 "sample_idx": sample_idx,  # used for resuming and sorting
@@ -403,7 +333,7 @@ def test_and_save(
 
     tmp_f.close()
     metanet.train()
-    
+
     # ---------- Final gather & merged save ----------
     local_results = []
     if os.path.exists(rank_tmp_path):
@@ -437,50 +367,37 @@ def test_and_save(
             rec.pop("sample_idx", None)
 
         # ----- Compute summary stats -----
-        # mean loss
         losses = [r.get("loss", None) for r in merged]
         losses = [x for x in losses if isinstance(x, (int, float))]
         mean_loss = float(sum(losses) / max(len(losses), 1))
 
-        # mean statistics
         exacts = []
         lens_ = []
-        bleu_sums = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
-        bleu_counts = {1: 0,   2: 0,   3: 0,   4: 0}
 
         for r in merged:
             st = r.get("statistics", {}) or {}
-            if isinstance(st.get("exact_prefix_match", None), (int, float)):
-                exacts.append(float(st["exact_prefix_match"]))
+            # support either em or exact_prefix_match
+            v_em = st.get("em", st.get("exact_prefix_match", None))
+            if isinstance(v_em, (int, float)):
+                exacts.append(float(v_em))
             if isinstance(st.get("length", None), (int, float)):
                 lens_.append(float(st["length"]))
 
-            bleu = st.get("bleu", {}) or {}
-            for n in (1, 2, 3, 4):
-                key = f"bleu_{n}"
-                val = bleu.get(key, None)
-                if isinstance(val, (int, float)):
-                    bleu_sums[n] += float(val)
-                    bleu_counts[n] += 1
-
-        mean_exact = float(sum(exacts) / max(len(exacts), 1))
+        mean_em = float(sum(exacts) / max(len(exacts), 1))
         mean_length = float(sum(lens_) / max(len(lens_), 1))
-        mean_bleu = {
-            f"bleu_{n}": float(bleu_sums[n] / max(bleu_counts[n], 1))
-            for n in (1, 2, 3, 4)
-        }
+        mean_ppl = float(math.exp(mean_loss))
 
         summary = {
             "num_samples": len(merged),
             "mean_loss": mean_loss,
             "mean_statistics": {
                 "length": mean_length,
-                "exact_prefix_match": mean_exact,
-                "bleu": mean_bleu,
+                "em": mean_em,
+                "exact_prefix_match": mean_em,  # compatibility
+                "ppl": mean_ppl,
             },
         }
 
-        # ----- Write final output with summary first -----
         final_payload = {
             "summary": summary,
             "predictions": merged,
@@ -489,46 +406,164 @@ def test_and_save(
         with open(final_out_path, "w", encoding="utf-8") as f:
             json.dump(final_payload, f, ensure_ascii=False, indent=2)
 
+        logger.info(f"Saved {len(merged)} predictions (+summary) to {final_out_path}")
+
+
+# ===================== visualize 4 separate figures (PPL + Loss) =====================
+def visualize_recon_comp_curves_separate(
+    cfg,
+    lens: List[int],
+    out_dir: str,
+    recon_ppl_name: str = "recon_ppl.png",
+    comp_ppl_name: str = "comp_ppl.png",
+    recon_loss_name: str = "recon_loss.png",
+    comp_loss_name: str = "comp_loss.png",
+):
+    """
+    Create 4 separate images:
+      1) Recon PPL
+      2) Comp  PPL
+      3) Recon Loss (mean_loss)
+      4) Comp  Loss (mean_loss)
+
+    x-axis: 100..1000 (len*100)
+    y-axis:
+      - ppl plots: ppl = exp(mean_loss)
+      - loss plots: mean_loss
+
+    Requirements:
+      - recon/comp PPL images share same y-limits
+      - recon/comp Loss images share same y-limits
+    """
+
+    xs = [l * 100 for l in lens]
+
+    def read_summary(path: str):
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        return obj.get("summary", None)
+
+    recon_ppl, comp_ppl = [], []
+    recon_loss, comp_loss = [], []
+
+    for l in lens:
+        recon_path = os.path.join(out_dir, f"{l}_recon.json")
+        comp_path = os.path.join(out_dir, f"{l}_comp.json")
+
+        s_recon = read_summary(recon_path)
+        s_comp = read_summary(comp_path)
+
+        # ---- Loss ----
+        if s_recon is not None and isinstance(s_recon.get("mean_loss", None), (int, float)):
+            recon_loss.append(float(s_recon["mean_loss"]))
+        else:
+            recon_loss.append(float("nan"))
+
+        if s_comp is not None and isinstance(s_comp.get("mean_loss", None), (int, float)):
+            comp_loss.append(float(s_comp["mean_loss"]))
+        else:
+            comp_loss.append(float("nan"))
+
+        # ---- PPL = exp(mean_loss) ----
+        if isinstance(recon_loss[-1], (int, float)) and (not math.isnan(recon_loss[-1])) and (not math.isinf(recon_loss[-1])):
+            recon_ppl.append(float(math.exp(recon_loss[-1])))
+        else:
+            recon_ppl.append(float("nan"))
+
+        if isinstance(comp_loss[-1], (int, float)) and (not math.isnan(comp_loss[-1])) and (not math.isinf(comp_loss[-1])):
+            comp_ppl.append(float(math.exp(comp_loss[-1])))
+        else:
+            comp_ppl.append(float("nan"))
+
+    def finite_vals(arr):
+        vals = []
+        for x in arr:
+            if isinstance(x, (int, float)) and (not math.isnan(x)) and (not math.isinf(x)):
+                vals.append(float(x))
+        return vals
+
+    # ---- shared y-limits for PPL ----
+    ppl_all = finite_vals(recon_ppl) + finite_vals(comp_ppl)
+    ppl_ylim = None
+    if ppl_all:
+        ymin, ymax = min(ppl_all), max(ppl_all)
+        pad = (ymax - ymin) * 0.05 if ymax > ymin else (abs(ymax) * 0.05 + 1e-6)
+        ppl_ylim = (ymin - pad, ymax + pad)
+
+    # ---- shared y-limits for Loss ----
+    loss_all = finite_vals(recon_loss) + finite_vals(comp_loss)
+    loss_ylim = None
+    if loss_all:
+        ymin, ymax = min(loss_all), max(loss_all)
+        pad = (ymax - ymin) * 0.05 if ymax > ymin else (abs(ymax) * 0.05 + 1e-6)
+        loss_ylim = (ymin - pad, ymax + pad)
+
+    def plot_one(xs, ys, title, xlabel, ylabel, xticks, ylim, save_path):
+        fig = plt.figure(figsize=(8, 5))
+        ax = fig.add_subplot(1, 1, 1)
+        ax.plot(xs, ys, marker="o")
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_xticks(xticks)
+        if ylim is not None:
+            ax.set_ylim(*ylim)
+        ax.grid(True)
+        fig.tight_layout()
+        fig.savefig(save_path, dpi=200)
+        plt.close(fig)
+
+    # ---- PPL figures ----
+    plot_one(
+        xs, recon_ppl,
+        title="Recon PPL",
+        xlabel="Context length",
+        ylabel="PPL",
+        xticks=xs,
+        ylim=ppl_ylim,
+        save_path=os.path.join(out_dir, recon_ppl_name),
+    )
+    plot_one(
+        xs, comp_ppl,
+        title="Comp PPL",
+        xlabel="Context length",
+        ylabel="PPL",
+        xticks=xs,
+        ylim=ppl_ylim,
+        save_path=os.path.join(out_dir, comp_ppl_name),
+    )
+
+    # ---- Loss figures ----
+    plot_one(
+        xs, recon_loss,
+        title="Recon Loss",
+        xlabel="Context length",
+        ylabel="Loss",
+        xticks=xs,
+        ylim=loss_ylim,
+        save_path=os.path.join(out_dir, recon_loss_name),
+    )
+    plot_one(
+        xs, comp_loss,
+        title="Comp Loss",
+        xlabel="Context length",
+        ylabel="Loss",
+        xticks=xs,
+        ylim=loss_ylim,
+        save_path=os.path.join(out_dir, comp_loss_name),
+    )
+
+    if is_main_process():
         logger.info(
-            f"Saved {len(merged)} predictions (+summary) to {final_out_path}"
+            "Saved visualizations: "
+            f"{os.path.join(out_dir, recon_ppl_name)}, "
+            f"{os.path.join(out_dir, comp_ppl_name)}, "
+            f"{os.path.join(out_dir, recon_loss_name)}, "
+            f"{os.path.join(out_dir, comp_loss_name)}"
         )
-
-    # # ---------- Final gather & merged save ----------
-    # local_results = []
-    # if os.path.exists(rank_tmp_path):
-    #     with open(rank_tmp_path, "r", encoding="utf-8") as f:
-    #         for line in f:
-    #             line = line.strip()
-    #             if not line:
-    #                 continue
-    #             try:
-    #                 rec = json.loads(line)
-    #             except json.JSONDecodeError:
-    #                 continue
-    #             local_results.append(rec)
-
-    # if ddp_is_active():
-    #     gathered = [None for _ in range(world_size)]
-    #     dist.all_gather_object(gathered, local_results)
-
-    #     if is_main_process():
-    #         merged = []
-    #         for part in gathered:
-    #             if part:
-    #                 merged.extend(part)
-    # else:
-    #     merged = local_results
-
-    # if is_main_process():
-    #     merged.sort(key=lambda x: x.get("sample_idx", 0))
-    #     for rec in merged:
-    #         rec.pop("sample_idx", None)
-
-    #     with open(final_out_path, "w", encoding="utf-8") as f:
-    #         json.dump(merged, f, ensure_ascii=False, indent=2)
-
-    #     logger.info(f"Saved {len(merged)} predictions to {final_out_path}")
-
+# ==============================================================================
 
 
 @hydra.main(version_base=None, config_path="configs")
@@ -607,9 +642,7 @@ def main(cfg: DictConfig):
         resume_dir = os.path.join(ckpt_root, f"checkpoint-{cfg.test_global_step}")
         if not os.path.isdir(resume_dir):
             raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
-    elif isinstance(cfg.test_global_step, str) and cfg.test_global_step.startswith(
-        "checkpoint-epoch-"
-    ):
+    elif isinstance(cfg.test_global_step, str) and cfg.test_global_step.startswith("checkpoint-epoch-"):
         resume_dir = os.path.join(ckpt_root, cfg.test_global_step)
         if not os.path.isdir(resume_dir):
             raise ValueError(f"Requested resume dir {resume_dir} does not exist.")
@@ -619,18 +652,45 @@ def main(cfg: DictConfig):
     # Load model
     if is_main_process():
         logger.info(f"Resume mode, loading from {resume_dir}...")
-    metanetwork, metalora = load_checkpoint(metanetwork, resume_dir, device)
+    metanetwork, metalora, _ = load_checkpoint(metanetwork, resume_dir, device)
 
     # Data
     if is_main_process():
         logger.info("Preparing data...")
     if cfg.test.source == "wikitext":
+        def build_wikitext2_raw_articles(ds):
+            title_re = re.compile(r"^\s*(=+)\s*([^=].*?)\s*\1\s*$")
+
+            articles = []
+            cur_title = None
+            cur_lines = []
+
+            def flush():
+                nonlocal cur_title, cur_lines
+                if cur_title is None:
+                    cur_lines = []
+                    return
+                text = "\n".join(cur_lines).strip()
+                if text:
+                    articles.append({"title": cur_title, "text": text})
+                cur_lines = []
+
+            for line in ds["text"]:
+                m = title_re.match(line)
+                if m:
+                    flush()
+                    cur_title = m.group(2)
+                    continue
+                cur_lines.append(line)
+
+            flush()
+            return articles
+
         lens = [i for i in range(1, 11)]
         datasets = []
-        data_dir = os.path.join("data", "wikitext", "wikitext-103-raw-v1")
-        ds = load_dataset(data_dir)
-        data = list(ds["train"])
-        data = [item for item in data if len(item['text']) > 0]
+        data_dir = os.path.join("data", "wikitext", "wikitext-2-raw-v1")
+        ds = load_dataset(data_dir, split='train')
+        data = build_wikitext2_raw_articles(ds)
         idx_dict = json.load(open(os.path.join(data_dir, "idx_dict.json")))
         for l in lens:
             datasets.append(TextDataset([data[i]['text'].strip() for i in idx_dict[str(l)]]))
@@ -638,31 +698,41 @@ def main(cfg: DictConfig):
                 print(f"{l}: datasets num: {len(datasets[l-1])}")
         collators = []
         for l in lens:
-            collators.append(TestPretrainCollator(tokenizer, cfg, context_max_length=l*100 + 20, conversation_max_length=l*100 + 31, mode="recon"))
+            collators.append((
+                TestPretrainCollator(tokenizer, cfg, context_max_length=l*100 + 20, conversation_max_length=l*100 + 31, mode="recon"),
+                TestPretrainCollator(tokenizer, cfg, context_max_length=l*100 + 20, conversation_max_length=l*100 + 31, mode="comp")
+            ))
     else:
         raise ValueError(f"Unknown data source: {cfg.test.source}")
 
     pin = device.type == "cuda"
     for i, (ds, collator) in enumerate(zip(datasets, collators), start=1):
         test_sampler = (
-            DistributedSampler(
-                ds, num_replicas=get_world_size(), rank=get_rank(), shuffle=False
-            )
+            DistributedSampler(ds, num_replicas=get_world_size(), rank=get_rank(), shuffle=False)
             if get_world_size() > 1
             else None
         )
         num_workers_default = 2 if device.type == "cuda" else 0
 
-        test_loader = DataLoader(
+        test_loader_0 = DataLoader(
             ds,
             batch_size=cfg.test.batch_size,
             shuffle=False,
             sampler=test_sampler,
-            collate_fn=collator,
+            collate_fn=collator[0],
             pin_memory=pin,
             num_workers=getattr(cfg.test, "num_workers", num_workers_default),
-            persistent_workers=pin
-            and getattr(cfg.test, "num_workers", num_workers_default) > 0,
+            persistent_workers=pin and getattr(cfg.test, "num_workers", num_workers_default) > 0,
+        )
+        test_loader_1 = DataLoader(
+            ds,
+            batch_size=cfg.test.batch_size,
+            shuffle=False,
+            sampler=test_sampler,
+            collate_fn=collator[1],
+            pin_memory=pin,
+            num_workers=getattr(cfg.test, "num_workers", num_workers_default),
+            persistent_workers=pin and getattr(cfg.test, "num_workers", num_workers_default) > 0,
         )
 
         ckpt_root = os.path.join(hydra_run_dir, "checkpoints")
@@ -674,13 +744,43 @@ def main(cfg: DictConfig):
             cfg=cfg,
             metanetwork_ddp_or_module=metanetwork,
             tokenizer=tokenizer,
-            testloader=test_loader,
-            split_name=f"{i}",  # e.g. "squad"
+            testloader=test_loader_0,
+            split_name=f"{i}",  # e.g. "1".."10"
             use_metanet=True,
             metalora=metalora,
             device=device,
-            output_suffix=".json",
+            output_suffix="_recon.json",
         )
+        test_and_save(
+            cfg=cfg,
+            metanetwork_ddp_or_module=metanetwork,
+            tokenizer=tokenizer,
+            testloader=test_loader_1,
+            split_name=f"{i}",  # e.g. "1".."10"
+            use_metanet=True,
+            metalora=metalora,
+            device=device,
+            output_suffix="_comp.json",
+        )
+
+    # ===================== visualize after all json exist (PPL + Loss) =====================
+    if ddp_is_active():
+        dist.barrier()  # ensure rank0 can see all outputs
+
+    if is_main_process():
+        out_dir = os.path.join(cfg.test.save_path, cfg.test.source)
+        lens = [i for i in range(1, 11)]  # 1..10 => x=100..1000
+
+        visualize_recon_comp_curves_separate(
+            cfg=cfg,
+            lens=lens,
+            out_dir=out_dir,
+            recon_ppl_name="recon_ppl.png",
+            comp_ppl_name="comp_ppl.png",
+            recon_loss_name="recon_loss.png",
+            comp_loss_name="comp_loss.png",
+        )
+    # ==============================================================================
 
     ddp_cleanup_if_needed()
 
