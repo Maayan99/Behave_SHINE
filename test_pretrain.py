@@ -704,7 +704,35 @@ def main(cfg: DictConfig):
     if is_main_process():
         logger.info("Preparing data...")
     if cfg.test.source == "wikitext":
+        def is_valid_article(
+            text,
+            min_english_words=5,
+            max_non_ascii_ratio=0.3,
+        ):
+            """
+            Returns True if the article looks like valid English text.
+            """
+
+            if not text or not text.strip():
+                return False
+
+            # Count English-like words
+            english_words = re.findall(r"[A-Za-z]{2,}", text)
+            if len(english_words) < min_english_words:
+                return False
+
+            # Measure non-ASCII character ratio
+            total_chars = len(text)
+            if total_chars == 0:
+                return False
+
+            non_ascii_chars = sum(ord(c) > 127 for c in text)
+            if non_ascii_chars / total_chars > max_non_ascii_ratio:
+                return False
+
+            return True
         def build_wikitext2_raw_articles(ds):
+            # allow optional leading/trailing whitespace around the title markup
             title_re = re.compile(r"^\s*(=+)\s*([^=].*?)\s*\1\s*$")
 
             articles = []
@@ -716,9 +744,15 @@ def main(cfg: DictConfig):
                 if cur_title is None:
                     cur_lines = []
                     return
+
                 text = "\n".join(cur_lines).strip()
-                if text:
-                    articles.append({"title": cur_title, "text": text})
+
+                if text and is_valid_article(text):
+                    articles.append({
+                        "title": cur_title,
+                        "text": text
+                    })
+
                 cur_lines = []
 
             for line in ds["text"]:
