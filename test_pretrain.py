@@ -375,24 +375,41 @@ def test_and_save(
         for rec in merged:
             rec.pop("sample_idx", None)
 
-        # ----- Compute summary stats (mean + std) -----
+        # ----- Compute summary stats (mean/std/median/p10/p90) -----
         def _finite_float(x):
             return isinstance(x, (int, float)) and (not math.isnan(x)) and (not math.isinf(x))
 
         losses = [r.get("loss", None) for r in merged]
         losses = [float(x) for x in losses if _finite_float(x)]
+        loss_arr = np.asarray(losses, dtype=np.float64) if losses else None
 
-        loss_mean = float(np.mean(losses)) if losses else float("nan")
-        loss_std = float(np.std(losses, ddof=0)) if losses else float("nan")
+        def _stat_pack(arr: np.ndarray):
+            """
+            Returns dict with mean/std/median/p10/p90.
+            """
+            if arr is None or arr.size == 0:
+                nan = float("nan")
+                return {"mean": nan, "std": nan, "median": nan, "p10": nan, "p90": nan}
+            return {
+                "mean": float(np.mean(arr)),
+                "std": float(np.std(arr, ddof=0)),
+                "median": float(np.median(arr)),
+                "p10": float(np.percentile(arr, 10)),
+                "p90": float(np.percentile(arr, 90)),
+            }
+
+        loss_stats = _stat_pack(loss_arr)
 
         # Per-sample PPL stats: ppl_i = exp(loss_i)
-        ppls = [math.exp(x) for x in losses] if losses else []
-        ppl_mean = float(np.mean(ppls)) if ppls else float("nan")
-        ppl_std = float(np.std(ppls, ddof=0)) if ppls else float("nan")
+        if loss_arr is not None and loss_arr.size > 0:
+            ppl_arr = np.exp(loss_arr)
+        else:
+            ppl_arr = None
+        ppl_stats = _stat_pack(ppl_arr)
 
+        # Existing EM/length stats (keep mean/std; optionally add median/p10/p90 if you want)
         exacts = []
         lens_ = []
-
         for r in merged:
             st = r.get("statistics", {}) or {}
             v_em = st.get("em", st.get("exact_prefix_match", None))
@@ -402,28 +419,40 @@ def test_and_save(
             if _finite_float(v_len):
                 lens_.append(float(v_len))
 
-        em_mean = float(np.mean(exacts)) if exacts else float("nan")
-        em_std = float(np.std(exacts, ddof=0)) if exacts else float("nan")
+        em_arr = np.asarray(exacts, dtype=np.float64) if exacts else None
+        len_arr = np.asarray(lens_, dtype=np.float64) if lens_ else None
 
-        length_mean = float(np.mean(lens_)) if lens_ else float("nan")
-        length_std = float(np.std(lens_, ddof=0)) if lens_ else float("nan")
+        em_mean = float(np.mean(em_arr)) if em_arr is not None and em_arr.size > 0 else float("nan")
+        em_std  = float(np.std(em_arr, ddof=0)) if em_arr is not None and em_arr.size > 0 else float("nan")
+
+        length_mean = float(np.mean(len_arr)) if len_arr is not None and len_arr.size > 0 else float("nan")
+        length_std  = float(np.std(len_arr, ddof=0)) if len_arr is not None and len_arr.size > 0 else float("nan")
 
         summary = {
             "num_samples": len(merged),
-            "mean_loss": loss_mean,  # keep existing key for compatibility
-            "std_loss": loss_std,    # NEW
+
+            # Keep existing keys for compatibility
+            "mean_loss": loss_stats["mean"],
+            "std_loss": loss_stats["std"],
+
+            # NEW: richer loss stats
+            "loss_statistics": loss_stats,  # {mean,std,median,p10,p90}
+
             "mean_statistics": {
                 "length": length_mean,
                 "em": em_mean,
                 "exact_prefix_match": em_mean,  # compatibility
-                "ppl": ppl_mean,                # mean(exp(loss_i))
+                "ppl": ppl_stats["mean"],       # compatibility: mean(exp(loss_i))
             },
-            "std_statistics": {                 # NEW
+            "std_statistics": {
                 "length": length_std,
                 "em": em_std,
                 "exact_prefix_match": em_std,
-                "ppl": ppl_std,
+                "ppl": ppl_stats["std"],        # compatibility
             },
+
+            # NEW: richer ppl stats
+            "ppl_statistics": ppl_stats,      # {mean,std,median,p10,p90}
         }
 
         final_payload = {
@@ -449,104 +478,138 @@ def visualize_recon_comp_curves_separate(
 ):
     """
     Create 4 separate images:
-      1) Recon PPL (mean ± std)
-      2) Comp  PPL (mean ± std)
-      3) Recon Loss (mean ± std)
-      4) Comp  Loss (mean ± std)
+      1) Recon PPL (mean/median/p10/p90)
+      2) Comp  PPL (mean/median/p10/p90)
+      3) Recon Loss (mean/median/p10/p90)
+      4) Comp  Loss (mean/median/p10/p90)
 
-    x-axis: 100..1000 (len*100)
-
-    y-axis:
-      - ppl plots: mean(exp(loss_i)) and std(exp(loss_i))
-      - loss plots: mean(loss_i) and std(loss_i)
+    x-axis: 100..2000 (len*100 if lens=1..20)
 
     Requirements:
-      - recon/comp PPL images share same y-limits (include std bands)
-      - recon/comp Loss images share same y-limits (include std bands)
+      - recon/comp PPL images share same y-limits (based on all plotted stats)
+      - recon/comp Loss images share same y-limits (based on all plotted stats)
     """
-
     xs = [l * 100 for l in lens]
 
-    def read_mean_std(path: str, kind: str) -> Tuple[float, float]:
+    def _finite(x):
+        return isinstance(x, (int, float)) and (not math.isnan(x)) and (not math.isinf(x))
+
+    def read_stat_pack(path: str, kind: str) -> Dict[str, float]:
         """
         kind: 'loss' or 'ppl'
+        Returns dict: {mean,std,median,p10,p90} (nan if missing)
         """
+        nan = float("nan")
         if not os.path.exists(path):
-            return float("nan"), float("nan")
+            return {"mean": nan, "std": nan, "median": nan, "p10": nan, "p90": nan}
+
         with open(path, "r", encoding="utf-8") as f:
             obj = json.load(f)
         s = obj.get("summary", {}) or {}
 
         if kind == "loss":
-            return float(s.get("mean_loss", float("nan"))), float(s.get("std_loss", float("nan")))
+            pack = s.get("loss_statistics", None)
+            if isinstance(pack, dict):
+                return {
+                    "mean": float(pack.get("mean", nan)),
+                    "std": float(pack.get("std", nan)),
+                    "median": float(pack.get("median", nan)),
+                    "p10": float(pack.get("p10", nan)),
+                    "p90": float(pack.get("p90", nan)),
+                }
+            # fallback for older outputs
+            return {
+                "mean": float(s.get("mean_loss", nan)),
+                "std": float(s.get("std_loss", nan)),
+                "median": nan,
+                "p10": nan,
+                "p90": nan,
+            }
+
         if kind == "ppl":
+            pack = s.get("ppl_statistics", None)
+            if isinstance(pack, dict):
+                return {
+                    "mean": float(pack.get("mean", nan)),
+                    "std": float(pack.get("std", nan)),
+                    "median": float(pack.get("median", nan)),
+                    "p10": float(pack.get("p10", nan)),
+                    "p90": float(pack.get("p90", nan)),
+                }
+            # fallback for older outputs
             ms = s.get("mean_statistics", {}) or {}
             ss = s.get("std_statistics", {}) or {}
-            return float(ms.get("ppl", float("nan"))), float(ss.get("ppl", float("nan")))
-        return float("nan"), float("nan")
+            return {
+                "mean": float(ms.get("ppl", nan)),
+                "std": float(ss.get("ppl", nan)),
+                "median": nan,
+                "p10": nan,
+                "p90": nan,
+            }
 
-    recon_ppl_mean, recon_ppl_std = [], []
-    comp_ppl_mean, comp_ppl_std = [], []
-    recon_loss_mean, recon_loss_std = [], []
-    comp_loss_mean, comp_loss_std = [], []
+        return {"mean": nan, "std": nan, "median": nan, "p10": nan, "p90": nan}
 
-    for l in lens:
-        recon_path = os.path.join(out_dir, f"{l}_recon.json")
-        comp_path = os.path.join(out_dir, f"{l}_comp.json")
+    def collect_series(kind: str):
+        """
+        Returns:
+          recon: dict of lists for each stat key
+          comp : dict of lists for each stat key
+        """
+        keys = ["mean", "median", "p10", "p90"]
+        recon = {k: [] for k in keys}
+        comp  = {k: [] for k in keys}
 
-        m, s = read_mean_std(recon_path, "ppl")
-        recon_ppl_mean.append(m); recon_ppl_std.append(s)
+        for l in lens:
+            recon_path = os.path.join(out_dir, f"{l}_recon.json")
+            comp_path  = os.path.join(out_dir, f"{l}_comp.json")
 
-        m, s = read_mean_std(comp_path, "ppl")
-        comp_ppl_mean.append(m); comp_ppl_std.append(s)
+            rpack = read_stat_pack(recon_path, kind)
+            cpack = read_stat_pack(comp_path, kind)
 
-        m, s = read_mean_std(recon_path, "loss")
-        recon_loss_mean.append(m); recon_loss_std.append(s)
+            for k in keys:
+                recon[k].append(rpack[k])
+                comp[k].append(cpack[k])
 
-        m, s = read_mean_std(comp_path, "loss")
-        comp_loss_mean.append(m); comp_loss_std.append(s)
+        return recon, comp
 
-    def _finite(x):
-        return isinstance(x, (int, float)) and (not math.isnan(x)) and (not math.isinf(x))
-
-    def finite_band(means, stds):
+    def compute_shared_ylim(recon: Dict[str, List[float]], comp: Dict[str, List[float]]):
         vals = []
-        for m, s in zip(means, stds):
-            if _finite(m) and _finite(s):
-                vals.append(m - s)
-                vals.append(m + s)
-        return vals
+        for series_dict in (recon, comp):
+            for k, arr in series_dict.items():
+                for v in arr:
+                    if _finite(v):
+                        vals.append(v)
+        if not vals:
+            return None
+        ymin, ymax = min(vals), max(vals)
+        pad = (ymax - ymin) * 0.05 if ymax > ymin else (abs(ymax) * 0.05 + 1e-6)
+        return (ymin - pad, ymax + pad)
 
-    ppl_all = finite_band(recon_ppl_mean, recon_ppl_std) + finite_band(comp_ppl_mean, comp_ppl_std)
-    loss_all = finite_band(recon_loss_mean, recon_loss_std) + finite_band(comp_loss_mean, comp_loss_std)
-
-    # def padded_ylim(all_vals):
-    #     if not all_vals:
-    #         return None
-    #     ymin, ymax = min(all_vals), max(all_vals)
-    #     pad = (ymax - ymin) * 0.05 if ymax > ymin else (abs(ymax) * 0.05 + 1e-6)
-    #     return (ymin - pad, ymax + pad)
-
-    # ppl_ylim = padded_ylim(ppl_all)
-    # loss_ylim = padded_ylim(loss_all)
-
-    def plot_mean_std(xs, mean, std, title, xlabel, ylabel, xticks, ylim, save_path):
+    def plot_multi(xs, series: Dict[str, List[float]], title, xlabel, ylabel, xticks, ylim, save_path):
+        """
+        Plot mean/median/p10/p90 as 4 curves in one figure.
+        Also fill the band between p10 and p90 when both exist.
+        """
         fig = plt.figure(figsize=(8, 5))
         ax = fig.add_subplot(1, 1, 1)
 
-        ax.plot(xs, mean, marker="o")
+        # Curves
+        ax.plot(xs, series["mean"], marker="o", label="mean")
+        ax.plot(xs, series["median"], marker="o", label="median")
+        ax.plot(xs, series["p10"], marker="o", label="p10")
+        ax.plot(xs, series["p90"], marker="o", label="p90")
 
+        # Band between p10 and p90 (optional)
         lower = []
         upper = []
-        for m, s in zip(mean, std):
-            if _finite(m) and _finite(s):
-                lower.append(m - s)
-                upper.append(m + s)
+        for lo, hi in zip(series["p10"], series["p90"]):
+            if _finite(lo) and _finite(hi):
+                lower.append(lo)
+                upper.append(hi)
             else:
                 lower.append(float("nan"))
                 upper.append(float("nan"))
-
-        ax.fill_between(xs, lower, upper, alpha=0.2)
+        ax.fill_between(xs, lower, upper, alpha=0.15, label="p10–p90 band")
 
         ax.set_title(title)
         ax.set_xlabel(xlabel)
@@ -555,24 +618,27 @@ def visualize_recon_comp_curves_separate(
         if ylim is not None:
             ax.set_ylim(*ylim)
         ax.grid(True)
+        ax.legend()
         fig.tight_layout()
         fig.savefig(save_path, dpi=200)
         plt.close(fig)
 
     # ---- PPL figures ----
-    ppl_ylim = (1.0, 2.0)
-    plot_mean_std(
-        xs, recon_ppl_mean, recon_ppl_std,
-        title="Recon PPL (mean ± std)",
+    recon_ppl, comp_ppl = collect_series("ppl")
+    ppl_ylim = (1.0, 3.0) # compute_shared_ylim(recon_ppl, comp_ppl)
+
+    plot_multi(
+        xs, recon_ppl,
+        title="Recon PPL (mean/median/p10/p90)",
         xlabel="Context length",
         ylabel="PPL",
         xticks=xs,
         ylim=ppl_ylim,
         save_path=os.path.join(out_dir, recon_ppl_name),
     )
-    plot_mean_std(
-        xs, comp_ppl_mean, comp_ppl_std,
-        title="Comp PPL (mean ± std)",
+    plot_multi(
+        xs, comp_ppl,
+        title="Comp PPL (mean/median/p10/p90)",
         xlabel="Context length",
         ylabel="PPL",
         xticks=xs,
@@ -581,19 +647,21 @@ def visualize_recon_comp_curves_separate(
     )
 
     # ---- Loss figures ----
-    loss_ylim = (0.0, 1.0)
-    plot_mean_std(
-        xs, recon_loss_mean, recon_loss_std,
-        title="Recon Loss (mean ± std)",
+    recon_loss, comp_loss = collect_series("loss")
+    loss_ylim = (0.0, 1.0) # compute_shared_ylim(recon_loss, comp_loss)
+
+    plot_multi(
+        xs, recon_loss,
+        title="Recon Loss (mean/median/p10/p90)",
         xlabel="Context length",
         ylabel="Loss",
         xticks=xs,
         ylim=loss_ylim,
         save_path=os.path.join(out_dir, recon_loss_name),
     )
-    plot_mean_std(
-        xs, comp_loss_mean, comp_loss_std,
-        title="Comp Loss (mean ± std)",
+    plot_multi(
+        xs, comp_loss,
+        title="Comp Loss (mean/median/p10/p90)",
         xlabel="Context length",
         ylabel="Loss",
         xticks=xs,
