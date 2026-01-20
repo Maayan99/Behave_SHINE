@@ -590,7 +590,7 @@ def visualize_recon_comp_curves_separate(
         Plot mean/median/p10/p90 as 4 curves in one figure.
         Also fill the band between p10 and p90 when both exist.
         """
-        fig = plt.figure(figsize=(8, 5))
+        fig = plt.figure(figsize=(4, 3.5))
         ax = fig.add_subplot(1, 1, 1)
 
         # Curves
