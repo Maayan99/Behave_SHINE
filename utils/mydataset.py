@@ -346,47 +346,6 @@ class GroupedSquadDataset(Dataset):
             if answer[i][0].islower():
                 answer[i] = answer[i][0].upper() + answer[i][1:]
         return {"evidence": str(evidence).strip(), "question": str(self.data[idx]['question']).strip(), "answer": answer}
-
-# class SFTDataset(Dataset):
-#     def __init__(
-#         self,
-#         data: List[Dict[str, Any]],
-#         tokenizer,
-#     ):
-#         self.tokenizer = tokenizer
-#         self.data = data  
-         
-#         context_token_lengths = []
-#         conversations_token_lengths = []
-#         tmp_data = data.shuffle().select(range(100))
-#         for item in tmp_data:
-#             context = item["context"]
-#             conversations = item["conversations"]
-
-#             context_encoded = tokenizer(
-#                 context,
-#                 padding=False,
-#                 return_tensors=None,
-#             )
-#             context_token_lengths.append(len(context_encoded["input_ids"]))
-#             conversations_encoded = self.tokenizer.apply_chat_template(
-#                 conversations,
-#                 add_generation_prompt=False,   # adds the assistant turn start
-#                 tokenize=True,
-#                 return_tensors="pt",
-#                 return_dict=True,
-#                 enable_thinking=False,
-#             )
-#             conversations_token_lengths.append(len(conversations_encoded["input_ids"][0]))
-
-#         print(f"[SFTDataset] Average context token length: {np.mean(context_token_lengths):.2f}({np.std(context_token_lengths):.2f})")
-#         print(f"[SFTDataset] Average conversation token length: {np.mean(conversations_token_lengths):.2f}({np.std(conversations_token_lengths):.2f})")
-        
-#     def __len__(self):
-#         return len(self.data)
-
-#     def __getitem__(self, idx) -> Dict[str, Any]:
-#         return {"evidence": self.data[idx]['context'], "conversation": self.data[idx]['conversations']}
     
 class IFTDataset(Dataset):
     def __init__(
@@ -443,7 +402,65 @@ class IFTC1QADataset(Dataset):
     def __getitem__(self, idx) -> Dict[str, Any]:
         item = self.item_list[idx]
         return {"evidence": item['context'], "conversations": item['conversations'], "contextlen": item['contextlen'], "conversationlen": item['conversationlen']}
-        
+
+class MQADataset(Dataset):
+    def __init__(
+        self,
+        data,
+    ):
+        self.data = data
+         
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx) -> Dict[str, Any]:
+        item = self.data[idx]
+        contexts = item['context']
+        conversations = item['conversations']
+        final_conversations = []
+        for conv in conversations:
+            final_conversations.extend([{'role': 'user', 'content': conv['question']}, {'role': 'assistant', 'content': conv['answer']}])
+        questions = []
+        answers = []
+        for conv in conversations:
+            questions.append(conv['question'])
+            answers.append(conv['answer'])
+        return {"evidence": contexts, "conversations": final_conversations, "questions": questions, "answers": answers}
+    
+class SFTDataset(Dataset):
+    def __init__(
+        self,
+        data,
+    ):
+        self.data = data  
+         
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx) -> Dict[str, Any]:
+        results = {"evidence": self.data[idx]['context']}
+        orig_conversation = []
+        orig_questions = []
+        orig_answers = []
+        for conv in self.data[idx]['orig_conversation']:
+            orig_conversation.extend([{'role': 'user', 'content': conv['question']}, {'role': 'assistant', 'content': conv['answer']}])
+            orig_questions.append(conv['question'])
+            orig_answers.append(conv['answer'])
+        results["orig_conversation"] = orig_conversation
+        results["orig_questions"] = orig_questions
+        results["orig_answers"] = orig_answers
+        for i in range(1, 11):
+            conversation = []
+            questions = []
+            answers = []
+            for conv in self.data[idx][f'conversation{i}']:
+                conversation.extend([{'role': 'user', 'content': conv['question']}, {'role': 'assistant', 'content': conv['answer']}])
+                questions.append(conv['question'])
+                answers.append(conv['answer'])
+            results[f'conversation{i}'] = conversation
+            results[f'questions{i}'] = questions
+            results[f'answers{i}'] = answers
+        return results
 
 # ---------------------------
 # Collator with dynamic padding and label masking
@@ -1087,68 +1104,6 @@ class SquadCollator(BaseCollator):
             "questions": questions,
         }
 
-
-# @dataclass
-# class SFTCollator(BaseCollator):
-#     tokenizer: Any
-#     context_max_length: int = 1024
-#     conversation_max_length: int = 1024
-
-#     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-#         evidence_texts = [t['evidence'] for t in batch]
-#         conversation_texts = [t['conversation'] for t in batch]
-#         if isinstance(conversation_texts[0], Column):
-#             conversation_texts = list(conversation_texts[0])  # or conversation_texts[0][:]
-
-#         evidence_enc = self.tokenizer(
-#             evidence_texts,
-#             max_length=self.context_max_length,
-#             truncation=True,
-#             return_tensors="pt",
-#             padding="max_length",
-#         )
-#         evidence_ids = evidence_enc["input_ids"]
-#         evidence_attention_mask = evidence_enc["attention_mask"]
-
-#         input_enc = self.tokenizer.apply_chat_template(
-#                 conversation_texts,
-#                 add_generation_prompt=False,   # adds the assistant turn start
-#                 tokenize=True,
-#                 return_tensors="pt",
-#                 max_length=self.conversation_max_length,
-#                 truncation=True,
-#                 return_dict=True,
-#                 padding="max_length",
-#                 enable_thinking=False,
-#             )
-#         input_ids = input_enc["input_ids"]
-#         input_attention_mask = input_enc["attention_mask"]
-
-#         labels = input_ids.clone()
-#         labels = self.mask_label(labels)
-        
-           
-#         # res = "input"
-#         # tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0])
-#         # for i, t in enumerate(tokens):
-#         #     res = f"{res}\n{i}: token_ids: {t} attention_mask: {input_attention_mask[0][i]} label: {labels[0][i] if labels is not None else 'N/A'}"
-#         # res = f"{res}\nevidence"
-#         # tokens = self.tokenizer.convert_ids_to_tokens(evidence_ids[0])
-#         # for i, t in enumerate(tokens):
-#         #     res = f"{res}\n{i}: token_ids: {t} attention_mask: {evidence_attention_mask[0][i]}"
-#         # res = f"{res}\n\n"
-#         # print(res)
-#         # exit()
-                
-#         return {
-#             "evidence": evidence_texts,
-#             "evidence_ids": evidence_ids,
-#             "evidence_attention_mask": evidence_attention_mask,
-#             "input_ids": input_ids,
-#             "labels": labels,
-#             "input_attention_mask": input_attention_mask,
-#         }
-
 @dataclass
 class IFTCollator(BaseCollator):
     tokenizer: Any
@@ -1213,4 +1168,209 @@ class IFTCollator(BaseCollator):
             "input_ids": input_ids,
             "labels": labels,
             "input_attention_mask": input_attention_mask,
+        }
+
+@dataclass
+class MQACollator(BaseCollator):
+    tokenizer: Any
+    context_max_length: int = 1024
+    conversation_max_length: int = 1024
+    cfg: Any = None
+    sys_msg: bool = False
+    no_evidence: bool = False
+
+    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        evidence_texts = [t['evidence'] for t in batch]
+        conversation_texts = [t['conversations'] for t in batch]
+        # if isinstance(conversation_texts[0], Column):
+        #     conversation_texts = list(conversation_texts[0])  # or conversation_texts[0][:]
+        if self.sys_msg:
+            if self.no_evidence:
+                PRMOPT = "You are a helpful assistant. Answer the question concisely with short words or phrases. Answer the question directly and output nothing else. Never say you don't know the answer. Never enter think mode."
+                messages = [
+                    [{"role": "system", "content": f"{PRMOPT}"}] + conversation
+                    for conversation in conversation_texts
+                ]
+                initial_messages = [{"role": "system", "content": f"{PRMOPT}"} for _ in conversation_texts]
+            else:
+                PRMOPT = "You are a helpful assistant, answer the questions based on the given context. Each answer must be directly extractable from the context (i.e., an exact span or minor paraphrase for fluency). Do not invent information. Answer the question directly and output nothing else. Never enter think mode.\n\nContext: "
+                messages = [
+                    [{"role": "system", "content": f"{PRMOPT}{evidence}"}] + conversation
+                    for evidence, conversation in zip(evidence_texts, conversation_texts)
+                ]
+                initial_messages = [{"role": "system", "content": f"{PRMOPT}{evidence}"} for evidence in evidence_texts]
+        else:
+            messages = [conversation for conversation in conversation_texts]
+            initial_messages = [{} for _ in conversation_texts]
+
+        evidence_enc = self.tokenizer(
+            evidence_texts,
+            max_length=self.context_max_length,
+            truncation=True,
+            return_tensors="pt",
+            padding="max_length",
+        )
+        evidence_ids = evidence_enc["input_ids"]
+        evidence_attention_mask = evidence_enc["attention_mask"]
+
+        input_enc = self.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=False,   # adds the assistant turn start
+                tokenize=True,
+                return_tensors="pt",
+                max_length=self.conversation_max_length,
+                truncation=True,
+                return_dict=True,
+                padding="max_length",
+                enable_thinking=False,
+            )
+        input_ids = input_enc["input_ids"]
+        input_attention_mask = input_enc["attention_mask"]
+        
+
+        labels = input_ids.clone()
+        labels = self.mask_label(labels)
+            
+        # res = "input"
+        # tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0])
+        # for i, t in enumerate(tokens):
+        #     res = f"{res}\n{i}: token_ids: {t} attention_mask: {input_attention_mask[0][i]} label: {labels[0][i] if labels is not None else 'N/A'}"
+        # res = f"{res}\nevidence"
+        # tokens = self.tokenizer.convert_ids_to_tokens(evidence_ids[0])
+        # for i, t in enumerate(tokens):
+        #     res = f"{res}\n{i}: token_ids: {t} attention_mask: {evidence_attention_mask[0][i]}"
+        # # res = f"{res}\ncontext len:{batch[0]['contextlen']} conversation len:{batch[0]['conversationlen']}"
+        # res = f"{res}\n\n"
+        # print(res, flush=True)
+                
+        return {
+            "initial_messages": initial_messages,
+            "evidence": evidence_texts,
+            "evidence_ids": evidence_ids,
+            "evidence_attention_mask": evidence_attention_mask,
+            "input_ids": input_ids,
+            "labels": labels,
+            "input_attention_mask": input_attention_mask,
+            "questions": [b['questions'] for b in batch],
+            "answers": [b['answers'] for b in batch],
+        }
+
+@dataclass
+class SFTCollator(BaseCollator):
+    tokenizer: Any
+    context_max_length: int = 1024
+    conversation_max_length: int = 1024
+    cfg: Any = None
+    sys_msg: bool = False
+    no_evidence: bool = False
+
+    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        evidence_texts = [t['evidence'] for t in batch]
+        
+        evidence_enc = self.tokenizer(
+            evidence_texts,
+            max_length=self.context_max_length,
+            truncation=True,
+            return_tensors="pt",
+            padding="max_length",
+        )
+        evidence_ids = evidence_enc["input_ids"]
+        evidence_attention_mask = evidence_enc["attention_mask"]
+        
+        conversation_texts = {}
+        questions = {}
+        answers = {}
+        input_ids = {}
+        labels = {}
+        input_attention_mask = {}
+        for i in range(1, 11):
+            conversation_texts[i] = [t[f'conversation{i}'] for t in batch]
+            questions[i] = [t[f'questions{i}'] for t in batch]
+            answers[i] = [t[f'answers{i}'] for t in batch]
+            
+            messages = [conversation for conversation in conversation_texts[i]]
+
+            input_enc = self.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=False,   # adds the assistant turn start
+                tokenize=True,
+                return_tensors="pt",
+                max_length=self.conversation_max_length,
+                truncation=True,
+                return_dict=True,
+                padding="max_length",
+                enable_thinking=False,
+            )
+            input_ids[i] = input_enc["input_ids"]
+            input_attention_mask[i] = input_enc["attention_mask"]
+            labels[i] = input_ids[i].clone()
+            labels[i] = self.mask_label(labels[i])
+        
+        orig_conversation_texts = [t['orig_conversation'] for t in batch]
+        orig_questions = [t['orig_questions'] for t in batch]
+        orig_answers = [t['orig_answers'] for t in batch]
+        
+        if self.sys_msg:
+            if self.no_evidence:
+                PRMOPT = "You are a helpful assistant. Answer the question concisely with short words or phrases. Answer the question directly and output nothing else. Never say you don't know the answer. Never enter think mode."
+                messages = [
+                    [{"role": "system", "content": f"{PRMOPT}"}] + conversation
+                    for conversation in orig_conversation_texts
+                ]
+                initial_messages = [{"role": "system", "content": f"{PRMOPT}"} for _ in orig_conversation_texts]
+            else:
+                PRMOPT = "You are a helpful assistant, answer the questions based on the given context. Each answer must be directly extractable from the context (i.e., an exact span or minor paraphrase for fluency). Do not invent information. Answer the question directly and output nothing else. Never enter think mode.\n\nContext: "
+                messages = [
+                    [{"role": "system", "content": f"{PRMOPT}{evidence}"}] + conversation
+                    for evidence, conversation in zip(evidence_texts, orig_conversation_texts)
+                ]
+                initial_messages = [{"role": "system", "content": f"{PRMOPT}{evidence}"} for evidence in evidence_texts]
+        else:
+            messages = [conversation for conversation in orig_conversation_texts]
+            initial_messages = [{} for _ in orig_conversation_texts]
+        
+        orig_input_enc = self.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=False,   # adds the assistant turn start
+                tokenize=True,
+                return_tensors="pt",
+                max_length=self.conversation_max_length,
+                truncation=True,
+                return_dict=True,
+                padding="max_length",
+                enable_thinking=False,
+            )
+        orig_input_ids = orig_input_enc["input_ids"]
+        orig_input_attention_mask = orig_input_enc["attention_mask"]
+        orig_labels = orig_input_ids.clone()
+        orig_labels = self.mask_label(orig_labels)
+            
+            
+        # res = "input"
+        # tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0])
+        # for i, t in enumerate(tokens):
+        #     res = f"{res}\n{i}: token_ids: {t} attention_mask: {input_attention_mask[0][i]} label: {labels[0][i] if labels is not None else 'N/A'}"
+        # res = f"{res}\nevidence"
+        # tokens = self.tokenizer.convert_ids_to_tokens(evidence_ids[0])
+        # for i, t in enumerate(tokens):
+        #     res = f"{res}\n{i}: token_ids: {t} attention_mask: {evidence_attention_mask[0][i]}"
+        # # res = f"{res}\ncontext len:{batch[0]['contextlen']} conversation len:{batch[0]['conversationlen']}"
+        # res = f"{res}\n\n"
+        # print(res, flush=True)
+                
+        return {
+            "initial_messages": initial_messages,
+            "evidence": evidence_texts,
+            "evidence_ids": evidence_ids,
+            "evidence_attention_mask": evidence_attention_mask,
+            "input_ids": input_ids,
+            "labels": labels,
+            "input_attention_mask": input_attention_mask,
+            "questions": {i: [b[f"questions{i}"] for b in batch] for i in range(1, 11)},
+            "answers": {i: [b[f"answers{i}"] for b in batch] for i in range(1, 11)},
+            "orig_input_ids": orig_input_ids,
+            "orig_labels": orig_labels,
+            "orig_input_attention_mask": orig_input_attention_mask,
+            "orig_questions": orig_questions,
+            "orig_answers": orig_answers,
         }

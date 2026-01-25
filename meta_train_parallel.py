@@ -471,6 +471,7 @@ def main(cfg: DictConfig):
     metamodel = MetaModelCls.from_pretrained(cfg.model.model_from, config=config)
     metamodel.reset_mem_tokens()
     metamodel.resize_token_embeddings(len(tokenizer))
+    
     # nothing_id = tokenizer.convert_tokens_to_ids("<NOTHING>")
     # with torch.no_grad():
     #     metamodel.get_input_embeddings().weight[nothing_id].zero_()
