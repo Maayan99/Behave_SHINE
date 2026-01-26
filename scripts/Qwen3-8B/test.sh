@@ -11,15 +11,17 @@
 #SBATCH -e test.err
 
 NAME=8gpu_8lora_128metalora_lr5e-5_grouppretrain_1150
-NUM_GPUS=8
+NUM_GPUS=4
 MASTER_PORT=18900             
 CONFIG_NAME="Qwen3-8B"       
 TEST_BATCH_SIZE=4
-TEST_GLOBAL_STEP=36875
-TEST_SOURCE=squad
+TEST_GLOBAL_STEP=epoch-1
+TEST_SOURCE=msmarco_v1 # squad hotpotqa 2wikimultihopqa musique msmarco_v1 msmarco_v2
 NUM_LAYERS=4
 METHOD=rl
-CONTEXT_AVG_LEN=2048
+CONTEXT_AVG_LEN=-1
+CONTEXT_MAX_LENGTH=4500
+CONVERSATION_MAX_LENGTH=300
 LORA_R=8
 METALORA_R=8
         
@@ -54,4 +56,6 @@ nohup torchrun \
     test.context_avg_len=$CONTEXT_AVG_LEN \
     model.lora_r=$LORA_R \
     model.metalora_r=$METALORA_R \
-    > tmp_test_$NAME.txt 2>&1 &
+    test.context_max_length=$CONTEXT_MAX_LENGTH \
+    test.conversation_max_length=$CONVERSATION_MAX_LENGTH \
+    > tmp_test_${TEST_SOURCE}_$NAME.txt 2>&1 &

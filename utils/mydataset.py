@@ -303,7 +303,7 @@ class GroupedSquadDataset(Dataset):
         all_context_list = deepcopy(list(text_to_idx.keys()))
         self.text_to_idx = text_to_idx
         
-        if self.context_len is None:
+        if self.context_len is None or self.context_len <= 0:
             self.groups = [[ctx] for ctx in all_context_list]
         else:
             num_tokens = len(self.tokenizer(self.sep.join(all_context_list))["input_ids"])
@@ -346,6 +346,63 @@ class GroupedSquadDataset(Dataset):
             if answer[i][0].islower():
                 answer[i] = answer[i][0].upper() + answer[i][1:]
         return {"evidence": str(evidence).strip(), "question": str(self.data[idx]['question']).strip(), "answer": answer}
+    
+class HotpotqaDataset(Dataset):
+    def __init__(self, data: List[Dict[str, Any]]):
+        self.data = data
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, index):
+        contest_list = []
+        item = self.data[index]
+        for sentences in item['context']['sentences']:
+            contest_list.append("".join(sentences))
+        context = "\n\n".join(contest_list)
+        return {"evidence": context, "question": item['question'].strip(), "answer": [item['answer'].strip()]}
+
+class MusiqueDataset(Dataset):
+    def __init__(self, data: List[Dict[str, Any]]):
+        self.data = data
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, index):
+        item = self.data[index]
+        paragraphs = item['paragraphs']
+        qd = item['question_decomposition']
+        context_list = []
+        for p in paragraphs:
+            context_list.append(p['paragraph_text'])
+        context = "\n\n".join(context_list)
+        question = item['question'].strip()
+        answer_aliases = [t.strip() for t in item['answer_aliases']]
+        answer = [item['answer'].strip()] + answer_aliases
+        return {"evidence": context, "question": question, "answer": answer}
+
+class MsmarcoDataset(Dataset):
+    def __init__(self, data: List[Dict[str, Any]]):
+        data = list(data)
+        new_data = []
+        for item in data:
+            passages = item['passages']
+            if sum(passages['is_selected']) == 0 or len(item['answers']) == 0:
+                continue
+            new_data.append(item)
+        self.data = new_data
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, index):
+        item = self.data[index]
+        passages = item['passages']
+        context = "\n\n".join([passages['passage_text'][i] for i in range(len(passages['passage_text']))])
+        question = item['query']
+        answer = item['answers']
+        return {"evidence": context, "question": question.strip(), "answer": answer}
     
 class IFTDataset(Dataset):
     def __init__(
