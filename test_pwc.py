@@ -897,7 +897,7 @@ def main(cfg: DictConfig):
             data = [json.loads(line) for line in f.readlines()]
         random.seed(42)
         random.shuffle(data)
-        data = data[:1000]
+        # data = data[:1000]
         mqa_dataset = MQADataset(data)
         test_name.append("msmacro-mqa")
         test_datasets.append(mqa_dataset)
@@ -972,36 +972,36 @@ def main(cfg: DictConfig):
         # if is_main_process():
         #     logger.info(f"In-Context Prompt, Test results on {name}: {results}")
         
-        # generate_test_loader = DataLoader(
-        #     ds,
-        #     batch_size=1,
-        #     shuffle=False,
-        #     sampler=test_sampler,
-        #     collate_fn=test_collator,
-        #     pin_memory=pin,
-        #     num_workers=getattr(cfg.test, "num_workers", num_workers_default),
-        #     persistent_workers=pin and getattr(cfg.test, "num_workers", num_workers_default) > 0,
-        # )
-        # results, stats = generate_multiturn(
-        #     metanetwork,
-        #     generate_test_loader,
-        #     tokenizer,
-        #     device,
-        #     use_metanet=True,
-        #     metalora=metalora,
-        #     max_new_tokens=500,
-        #     max_conversation_length=3000,
-        # )
-        # if is_main_process():
-        #     output_path = os.path.join(out_dir, "generated_results.jsonl")
-        #     with open(output_path, "w") as f:
-        #         for res in results:
-        #             f.write(json.dumps(res, ensure_ascii=False) + "\n")
-        #     stats_path = os.path.join(out_dir, "generation_stats.json")
-        #     with open(stats_path, "w") as f:
-        #         json.dump(stats, f, indent=2)
-        #     logger.info(f"Generation results saved to {output_path}")
-        #     logger.info(f"Generation stats saved to {stats_path}")
+        generate_test_loader = DataLoader(
+            ds,
+            batch_size=1,
+            shuffle=False,
+            sampler=test_sampler,
+            collate_fn=test_collator,
+            pin_memory=pin,
+            num_workers=getattr(cfg.test, "num_workers", num_workers_default),
+            persistent_workers=pin and getattr(cfg.test, "num_workers", num_workers_default) > 0,
+        )
+        results, stats = generate_multiturn(
+            metanetwork,
+            generate_test_loader,
+            tokenizer,
+            device,
+            use_metanet=True,
+            metalora=metalora,
+            max_new_tokens=500,
+            max_conversation_length=3000,
+        )
+        if is_main_process():
+            output_path = os.path.join(out_dir, "generated_results.jsonl")
+            with open(output_path, "w") as f:
+                for res in results:
+                    f.write(json.dumps(res, ensure_ascii=False) + "\n")
+            stats_path = os.path.join(out_dir, "generation_stats.json")
+            with open(stats_path, "w") as f:
+                json.dump(stats, f, indent=2)
+            logger.info(f"Generation results saved to {output_path}")
+            logger.info(f"Generation stats saved to {stats_path}")
             
         # generate_prompt_test_loader = DataLoader(
         #     ds,
@@ -1064,64 +1064,64 @@ def main(cfg: DictConfig):
         #     logger.info(f"Generation results saved to {output_path}")
         #     logger.info(f"Generation stats saved to {stats_path}")
         
-        result = benchmark_generate_multiturn(
-            metanetwork,
-            tokenizer,
-            device,
-            max_conversation_length=3000,
-            max_new_tokens=500,
-            context_length=0,
-            num_turns=15,
-            question_length=20,
-            answer_length=20,
-            use_metanet=True,
-            metalora=metalora,
-            evidence_length=800,
-            warmup=2,
-        )
-        if is_main_process():
-            benchmark_path = os.path.join(out_dir, f"metanet_reproduce.json")
-            with open(benchmark_path, "w") as f:
-                json.dump(result, f, indent=2)
-            logger.info(f"Generation benchmark with metanet saved to {benchmark_path}")
-        result = benchmark_generate_multiturn(
-            metanetwork,
-            tokenizer,
-            device,
-            max_conversation_length=3000,
-            max_new_tokens=500,
-            context_length=820,
-            num_turns=15,
-            question_length=20,
-            answer_length=20,
-            use_metanet=False,
-            evidence_length=0,
-            warmup=2,
-        )
-        if is_main_process():
-            benchmark_path = os.path.join(out_dir, f"incontext_reproduce.json")
-            with open(benchmark_path, "w") as f:
-                json.dump(result, f, indent=2)
-            logger.info(f"Generation benchmark without metanet saved to {benchmark_path}")
-        result = benchmark_generate_multiturn(
-            metanetwork,
-            tokenizer,
-            device,
-            max_conversation_length=3000,
-            max_new_tokens=500,
-            context_length=0,
-            num_turns=15,
-            question_length=20,
-            answer_length=20,
-            use_metanet=False,
-            evidence_length=0,
-            warmup=2,
-        )
-        if is_main_process():
-            benchmark_path = os.path.join(out_dir, f"naive_reproduce.json")
-            with open(benchmark_path, "w") as f:
-                json.dump(result, f, indent=2)
-            logger.info(f"Generation benchmark naive saved to {benchmark_path}")
+        # result = benchmark_generate_multiturn(
+        #     metanetwork,
+        #     tokenizer,
+        #     device,
+        #     max_conversation_length=3000,
+        #     max_new_tokens=500,
+        #     context_length=0,
+        #     num_turns=15,
+        #     question_length=20,
+        #     answer_length=20,
+        #     use_metanet=True,
+        #     metalora=metalora,
+        #     evidence_length=800,
+        #     warmup=2,
+        # )
+        # if is_main_process():
+        #     benchmark_path = os.path.join(out_dir, f"metanet_reproduce.json")
+        #     with open(benchmark_path, "w") as f:
+        #         json.dump(result, f, indent=2)
+        #     logger.info(f"Generation benchmark with metanet saved to {benchmark_path}")
+        # result = benchmark_generate_multiturn(
+        #     metanetwork,
+        #     tokenizer,
+        #     device,
+        #     max_conversation_length=3000,
+        #     max_new_tokens=500,
+        #     context_length=820,
+        #     num_turns=15,
+        #     question_length=20,
+        #     answer_length=20,
+        #     use_metanet=False,
+        #     evidence_length=0,
+        #     warmup=2,
+        # )
+        # if is_main_process():
+        #     benchmark_path = os.path.join(out_dir, f"incontext_reproduce.json")
+        #     with open(benchmark_path, "w") as f:
+        #         json.dump(result, f, indent=2)
+        #     logger.info(f"Generation benchmark without metanet saved to {benchmark_path}")
+        # result = benchmark_generate_multiturn(
+        #     metanetwork,
+        #     tokenizer,
+        #     device,
+        #     max_conversation_length=3000,
+        #     max_new_tokens=500,
+        #     context_length=0,
+        #     num_turns=15,
+        #     question_length=20,
+        #     answer_length=20,
+        #     use_metanet=False,
+        #     evidence_length=0,
+        #     warmup=2,
+        # )
+        # if is_main_process():
+        #     benchmark_path = os.path.join(out_dir, f"naive_reproduce.json")
+        #     with open(benchmark_path, "w") as f:
+        #         json.dump(result, f, indent=2)
+        #     logger.info(f"Generation benchmark naive saved to {benchmark_path}")
         
         ################################  SFT ################################
         # sft_loader = DataLoader(

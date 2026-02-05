@@ -41,11 +41,11 @@ cd SHINE
 ### Environment
 Create the conda env using the following commands
 ```bash
-conda create -n metalora python==3.12 -y
-conda activate metalora
+conda create -n shine python==3.12 -y
+conda activate shine
 # Change the pytorch version based on your device
 pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
-pip install huggingface modelscope transformers datasets scikit-learn hydra-core tensorboard openai rouge seaborn matplotlib
+pip install huggingface==0.0.1 modelscope==1.31.0 transformers==4.57.1 datasets==4.4.1 scikit-learn==1.7.2 hydra-core==1.3.2 tensorboard==2.20.0 openai==2.6.1 rouge==1.0.1 seaborn==0.13.2 matplotlib==3.10.7 multiprocess==0.70.16
 ```
 
 ### Models
@@ -74,6 +74,30 @@ if can't connect to huggingface, try using the mirror
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
 ```
+
+## 🚀 Inference 
+
+
+
+## ⚙️ Train
+
+Pretrain
+```bash
+sh scripts/Qwen3-8B/pretrain_group_4layer_8lora_128metalora.sh
+```
+Test code is provided in `test_pretrain.py`
+
+Instruction Fine-Tuning MQA
+```bash
+sh scripts/Qwen3-8B/meta_train_parallel_ift_pwc_4layer_8lora_128metalora.sh
+```
+Test code is provided in `test_pwc.py`
+
+Instruction Fine-Tuning 1QA
+```bash
+sh scripts/Qwen3-8B/meta_train_parallel_ift_c1qa_4layer_8lora_128metalora.sh
+```
+Test code is provided in `test.py`
 
 
 <!-- ## 📖 Citation
