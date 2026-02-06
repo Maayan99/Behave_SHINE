@@ -65,12 +65,13 @@ Download the pretraining dataset
 hf download fxmeng/transmla_pretrain_6B_tokens --repo-type dataset --local-dir data/transmla_pretrain_6B_tokens
 ```
 
-Download instruction finetuning dataset from
+Download instruction finetuning dataset
 ```bash
 #Release soon
 ```
+The dataset generation script is provided in [generate_data](generate_data)
 
-if can't connect to huggingface, try using the mirror
+If can't connect to huggingface, try using the mirror
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
 ```
@@ -85,19 +86,19 @@ Pretrain
 ```bash
 sh scripts/Qwen3-8B/pretrain_group_4layer_8lora_128metalora.sh
 ```
-Test code is provided in `test_pretrain.py`
+Test code is provided in [test_pretrain.py](text_pretrain.py)
 
 Instruction Fine-Tuning MQA
 ```bash
 sh scripts/Qwen3-8B/meta_train_parallel_ift_pwc_4layer_8lora_128metalora.sh
 ```
-Test code is provided in `test_pwc.py`
+Test code is provided in [test_pwc.py](test_pwc.py)
 
 Instruction Fine-Tuning 1QA
 ```bash
 sh scripts/Qwen3-8B/meta_train_parallel_ift_c1qa_4layer_8lora_128metalora.sh
 ```
-Test code is provided in `test.py`
+Test code is provided in [test.py](test.py)
 
 
 <!-- ## 📖 Citation
