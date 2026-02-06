@@ -1,19 +1,18 @@
+<h1 align="center">🔆 SHINE: A Scalable In-Context Hypernetwork for Mapping Context to LoRA in a Single Pass</h1>
+
 <div align="center">
-# 🔆 SHINE: A Scalable In-Context Hypernetwork for Mapping Context to LoRA in a Single Pass
 
 ---
 
-An example
+<img src="figures/example.png" alt="example" width="1000" />
 
-![example](figures/example.png)
 ---
-Overall Architecture
 
-![overall architecture](figures/overall_architecture.png)
+<img src="figures/overall_architecture.png" alt="example" width="1000" />
+
 ---
-Hypernetwork Architecture
 
-![hypernetwork architecture](figures/hypernetwork_architecture.png)
+<img src="figures/hypernetwork_architecture.png" alt="example" width="600" />
 
 
 </div>
