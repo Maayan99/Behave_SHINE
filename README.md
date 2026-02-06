@@ -4,7 +4,7 @@
 
 ---
 
-<img src="figures/example.png" alt="example" width="800" />
+<img src="figures/example.png" alt="example" width="600" />
 
 ---
 
