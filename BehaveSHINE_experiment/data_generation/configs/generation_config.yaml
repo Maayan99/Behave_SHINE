@@ -31,3 +31,13 @@ complexity:
   simple: 0.30
   moderate: 0.40
   complex: 0.30
+
+responses:
+  model_72b_path: "/workspace/models/Qwen3-72B"
+  model_8b_path: "/workspace/models/Qwen3-8B"
+  batch_size_72b: 8
+  batch_size_8b: 16
+  max_new_tokens: 1024
+  output_72b_path: "data/raw/responses_72b.jsonl"
+  output_8b_with_sp_path: "data/raw/responses_8b_with_sp.jsonl"
+  output_8b_only_q_path: "data/raw/responses_8b_only_q.jsonl"
