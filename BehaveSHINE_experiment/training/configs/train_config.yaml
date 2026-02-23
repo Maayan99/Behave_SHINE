@@ -13,7 +13,7 @@ paths:
   eval_data: "./BehaveSHINE_experiment/data_generation/data/processed/val_dataset.jsonl"
   output_dir: "./BehaveSHINE_experiment/training/checkpoints"
   # Pretrained SHINE checkpoint — warm start for the hypernetwork
-  pretrained_checkpoint: "./checkpoints/8gpu_8lora_128metalora_lr5e-5_grouppretrain_1150/train/checkpoint-epoch-1"
+  pretrained_checkpoint: "./checkpoints/8gpu_8lora_128metalora_lr5e-5_grouppretrain_1150/iftpwc/checkpoint-epoch-2"
 
 model:
   lora_r: 8
