@@ -145,34 +145,19 @@ def main():
     logger.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
 
     # ── Model ─────────────────────────────────────────────────────────────────
-    # ── Model ─────────────────────────────────────────────────────────────────
     MetaModelCls = _import_class(cfg.model.metamodel_class_path)
     ConfigCls = _import_class(cfg.model.config_class_path)
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.tokenizer_from)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    logger.info(f"Calculating hypernetwork dimensions...")
+    logger.info(f"Initializing configuration...")
     config = ConfigCls.from_pretrained(cfg.model.model_from)
 
-    # MANUAL CALCULATION: Bypass tmp_model initialization
-    # In Qwen architecture, lora_params_numel = num_layers * hidden_size * rank * 2 (for A and B matrices)
-    # Plus any additional projections (q, k, v, o).
-    # To be safe and exact, we use the formula from the LoraQwen.py file:
-    rank = cfg.model.lora_r
-    # We assume standard 4 projections (q, k, v, o) per layer
-    lora_numel = config.num_hidden_layers * config.hidden_size * rank * 2 * 4
-
-    computed_mem_tokens = lora_numel * cfg.metanetwork.transformer_cfg.mean_pool_size // (
-                config.hidden_size * config.num_hidden_layers)
-
-    # Inject into config so the actual model can load
-    config.num_mem_token = computed_mem_tokens
-    cfg.num_mem_token = computed_mem_tokens
-    cfg.hidden_size = config.hidden_size
-    cfg.num_layers = config.num_hidden_layers
-
-    logger.info(f"Automatically set num_mem_token to {computed_mem_tokens}")
+    # 1. First, we must inject a dummy value so the model __init__ doesn't crash
+    config.num_mem_token = 64
+    config.lora_r = cfg.model.lora_r
+    config.metalora_r = cfg.model.metalora_r
 
     logger.info(f"Loading base model from {cfg.model.model_from} ...")
     metamodel = MetaModelCls.from_pretrained(
@@ -180,13 +165,30 @@ def main():
         config=config,
         ignore_mismatched_sizes=True
     )
+
+    # 2. NOW we get the real, exact numel from the loaded model
+    real_lora_numel = metamodel.lora_params_numel(cfg.model.lora_r)
+
+    # 3. Recalculate and update the config with the mathematically perfect token count
+    computed_mem_tokens = real_lora_numel * cfg.metanetwork.transformer_cfg.mean_pool_size // (
+                config.hidden_size * config.num_hidden_layers)
+
+    metamodel.config.num_mem_token = computed_mem_tokens
+    cfg.num_mem_token = computed_mem_tokens
+    cfg.hidden_size = config.hidden_size
+    cfg.num_layers = config.num_hidden_layers
+
+    # Re-init mem tokens with the correct size
     metamodel.reset_mem_tokens()
     metamodel.resize_token_embeddings(len(tokenizer))
 
+    logger.info(f"Perfectly aligned num_mem_token set to {computed_mem_tokens}")
+
+    # 4. Initialize Metanetwork with the EXACT numel the model reports
     metanetwork = Metanetwork(
         metamodel,
         cfg,
-        lora_numel,
+        real_lora_numel,
     )
     metanetwork.to(device)
 
