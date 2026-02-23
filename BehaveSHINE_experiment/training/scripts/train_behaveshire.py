@@ -150,7 +150,14 @@ def main():
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     logger.info(f"Loading base model from {cfg.model.model_from} ...")
-    metamodel = MetaModelCls.from_pretrained(cfg.model.model_from)
+    # Pass SHINE-specific arguments so they are injected into the vanilla config
+    metamodel = MetaModelCls.from_pretrained(
+        cfg.model.model_from,
+        num_mem_token=-1,  # -1 triggers the default memory token behavior in LoraQwen
+        lora_r=cfg.model.lora_r,
+        metalora_r=cfg.model.metalora_r,
+        ignore_mismatched_sizes=True  # Safety practice when loading custom architectures
+    )
 
     metanetwork = Metanetwork(
         metamodel,
