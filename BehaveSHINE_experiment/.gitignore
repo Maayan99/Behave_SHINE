@@ -1,0 +1,5 @@
+# Negate root-level *.txt rule so our prompt templates are tracked
+!**/*.txt
+
+# Generated data stays untracked
+data/

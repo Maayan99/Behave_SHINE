@@ -1,0 +1,33 @@
+api:
+  model: "claude-sonnet-4-6-20250929"
+  max_retries: 3
+  retry_delay_seconds: 5
+  requests_per_minute: 40
+
+system_prompts:
+  target_count: 2000
+  batch_size: 8
+  output_path: "data/raw/system_prompts.jsonl"
+
+questions:
+  per_system_prompt: 13
+  on_topic: 10
+  off_topic: 3
+  output_path: "data/raw/questions.jsonl"
+
+categories:
+  persona: 0.12
+  voice_style: 0.08
+  output_format: 0.12
+  behavioral_constraint: 0.10
+  language_task: 0.08
+  knowledge_injection: 0.15
+  conditional_logic: 0.08
+  multi_constraint: 0.15
+  refusal_redirection: 0.06
+  tool_simulation: 0.06
+
+complexity:
+  simple: 0.30
+  moderate: 0.40
+  complex: 0.30
