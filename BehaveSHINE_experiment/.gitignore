@@ -1,5 +1,12 @@
 # Negate root-level *.txt rule so our prompt templates are tracked
 !**/*.txt
 
-# Generated data stays untracked
+# Generated/raw data stays untracked
 data/
+
+# But track the processed dataset (train/val/test splits + stats)
+!data/
+!data/generation/
+!data/generation/data/
+!data/generation/data/processed/
+!data/generation/data/processed/**

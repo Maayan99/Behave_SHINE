@@ -1,0 +1,30 @@
+{
+  "total": 8640,
+  "train": 6912,
+  "val": 864,
+  "test": 864,
+  "missing_responses": 0,
+  "avg_context_chars": 841.3,
+  "avg_answer_chars": 1219.0,
+  "category_distribution": {
+    "behavioral_constraint": 756,
+    "conditional_logic": 756,
+    "knowledge_injection": 1344,
+    "language_task": 756,
+    "multi_constraint": 1344,
+    "output_format": 948,
+    "persona": 948,
+    "refusal_redirection": 564,
+    "tool_simulation": 468,
+    "voice_style": 756
+  },
+  "complexity_distribution": {
+    "complex": 2400,
+    "moderate": 3552,
+    "simple": 2688
+  },
+  "question_type_distribution": {
+    "off_topic": 1478,
+    "on_topic": 7162
+  }
+}
