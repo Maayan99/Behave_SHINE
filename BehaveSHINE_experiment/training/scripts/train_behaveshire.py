@@ -155,7 +155,7 @@ def main():
     config = ConfigCls.from_pretrained(cfg.model.model_from)
 
     # 1. First, we must inject a dummy value so the model __init__ doesn't crash
-    config.num_mem_token = 64
+    config.num_mem_token = 148
     config.lora_r = cfg.model.lora_r
     config.metalora_r = cfg.model.metalora_r
 
