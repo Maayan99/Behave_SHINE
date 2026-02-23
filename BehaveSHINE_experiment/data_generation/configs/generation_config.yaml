@@ -33,11 +33,21 @@ complexity:
   complex: 0.30
 
 responses:
-  model_72b_path: "/workspace/models/Qwen3-72B"
-  model_8b_path: "/workspace/models/Qwen3-8B"
-  batch_size_72b: 8
-  batch_size_8b: 16
-  max_new_tokens: 1024
-  output_72b_path: "data/raw/responses_72b.jsonl"
-  output_8b_with_sp_path: "data/raw/responses_8b_with_sp.jsonl"
-  output_8b_only_q_path: "data/raw/responses_8b_only_q.jsonl"
+  nebius_base_url: "https://api.tokenfactory.nebius.com/v1/"
+  teacher_model: "Qwen/Qwen3-235B-A22B-Instruct-2507"
+  max_tokens: 1024
+  temperature: 0.0
+  concurrency: 15
+  batch_save_interval: 50
+  max_retries: 3
+  output_path: "data/raw/responses_teacher.jsonl"
+
+dataset:
+  val_ratio: 0.1
+  test_ratio: 0.1
+  seed: 42
+  train_path: "data/processed/train_dataset.jsonl"
+  val_path: "data/processed/val_dataset.jsonl"
+  test_path: "data/processed/test_dataset.jsonl"
+  test_off_topic_path: "data/processed/test_off_topic.jsonl"
+  stats_path: "data/processed/dataset_stats.json"
