@@ -130,7 +130,7 @@ def call_claude(
     system: Optional[str] = None,
     max_tokens: int = 4096,
     temperature: float = 1.0,
-    model: str = "claude-sonnet-4-6-20250929",
+    model: str = "claude-sonnet-4-6",
     max_retries: int = 3,
     retry_delay_seconds: float = 5.0,
     rate_limiter: Optional[RateLimiter] = None,

@@ -1,5 +1,5 @@
 api:
-  model: "claude-sonnet-4-6-20250929"
+  model: "claude-sonnet-4-6"
   max_retries: 3
   retry_delay_seconds: 5
   requests_per_minute: 40
