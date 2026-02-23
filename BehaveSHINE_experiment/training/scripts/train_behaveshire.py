@@ -171,7 +171,7 @@ def main():
 
     metanetwork = Metanetwork(
         metamodel,
-        cfg,
+        cfg.metanetwork.transformer_cfg,
         metamodel.lora_params_numel(cfg.model.lora_r),
     )
 
