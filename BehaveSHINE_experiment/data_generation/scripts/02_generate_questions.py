@@ -187,7 +187,7 @@ def main():
                 response_text = utils.call_claude(
                     prompt=filled_prompt,
                     max_tokens=4096,
-                    temperature=1.0,
+                    temperature=0.8,
                     model=config["api"]["model"],
                     max_retries=config["api"]["max_retries"],
                     retry_delay_seconds=config["api"]["retry_delay_seconds"],
