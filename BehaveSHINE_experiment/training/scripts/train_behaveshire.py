@@ -30,6 +30,7 @@ from utils.mylogging import get_logger
 from utils.myloradict import iter_learnable_tensors
 from utils.mysaveload import load_checkpoint, save_checkpoint
 from utils.myseed import set_seed
+from transformers import AutoConfig
 
 from BehaveSHINE_experiment.training.scripts.dataset import (
     BehaveSHINECollator,
@@ -149,14 +150,23 @@ def main():
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    logger.info(f"Loading base model from {cfg.model.model_from} ...")
     # Pass SHINE-specific arguments so they are injected into the vanilla config
+
+    logger.info(f"Loading base model from {cfg.model.model_from} ...")
+
+    # 1. Load the vanilla configuration object first
+    model_config = AutoConfig.from_pretrained(cfg.model.model_from)
+
+    # 2. Inject the custom SHINE attributes required by LoraQwen.py
+    model_config.num_mem_token = -1
+    model_config.lora_r = cfg.model.lora_r
+    model_config.metalora_r = cfg.model.metalora_r
+
+    # 3. Instantiate the model using the modified config object
     metamodel = MetaModelCls.from_pretrained(
         cfg.model.model_from,
-        num_mem_token=-1,  # -1 triggers the default memory token behavior in LoraQwen
-        lora_r=cfg.model.lora_r,
-        metalora_r=cfg.model.metalora_r,
-        ignore_mismatched_sizes=True  # Safety practice when loading custom architectures
+        config=model_config,
+        ignore_mismatched_sizes=True
     )
 
     metanetwork = Metanetwork(
