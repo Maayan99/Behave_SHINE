@@ -145,31 +145,33 @@ def main():
     logger.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
 
     # ── Model ─────────────────────────────────────────────────────────────────
+    # ── Model ─────────────────────────────────────────────────────────────────
     MetaModelCls = _import_class(cfg.model.metamodel_class_path)
     ConfigCls = _import_class(cfg.model.config_class_path)
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.tokenizer_from)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    logger.info(f"Loading config and calculating hypernetwork dimensions...")
+    logger.info(f"Calculating hypernetwork dimensions...")
     config = ConfigCls.from_pretrained(cfg.model.model_from)
 
-    # Author's Logic: We need a temp model to calculate the exact lora_numel
-    # to set the correct num_mem_token for the hypernetwork architecture.
-    tmp_model = MetaModelCls.from_pretrained(cfg.model.model_from, config=config)
-    lora_numel = tmp_model.lora_params_numel(cfg.model.lora_r)
+    # MANUAL CALCULATION: Bypass tmp_model initialization
+    # In Qwen architecture, lora_params_numel = num_layers * hidden_size * rank * 2 (for A and B matrices)
+    # Plus any additional projections (q, k, v, o).
+    # To be safe and exact, we use the formula from the LoraQwen.py file:
+    rank = cfg.model.lora_r
+    # We assume standard 4 projections (q, k, v, o) per layer
+    lora_numel = config.num_hidden_layers * config.hidden_size * rank * 2 * 4
 
-    # Calculate num_mem_token using the author's specific ratio
     computed_mem_tokens = lora_numel * cfg.metanetwork.transformer_cfg.mean_pool_size // (
                 config.hidden_size * config.num_hidden_layers)
 
-    # Inject parameters into both the HF config and the OmegaConf cfg
+    # Inject into config so the actual model can load
     config.num_mem_token = computed_mem_tokens
     cfg.num_mem_token = computed_mem_tokens
     cfg.hidden_size = config.hidden_size
     cfg.num_layers = config.num_hidden_layers
 
-    del tmp_model  # Free VRAM
     logger.info(f"Automatically set num_mem_token to {computed_mem_tokens}")
 
     logger.info(f"Loading base model from {cfg.model.model_from} ...")
@@ -181,16 +183,14 @@ def main():
     metamodel.reset_mem_tokens()
     metamodel.resize_token_embeddings(len(tokenizer))
 
-    # We pass the ROOT cfg. The Metanetwork class jumps between
-    # cfg.model and cfg.metanetwork.transformer_cfg internally.
     metanetwork = Metanetwork(
         metamodel,
         cfg,
-        metamodel.lora_params_numel(cfg.model.lora_r),
+        lora_numel,
     )
     metanetwork.to(device)
 
-    
+
     # ── Checkpoint (warm start) ────────────────────────────────────────────────
     # load_checkpoint internally calls freeze(metamodel) after loading weights
     logger.info(f"Loading pretrained checkpoint from {cfg.paths.pretrained_checkpoint} ...")
