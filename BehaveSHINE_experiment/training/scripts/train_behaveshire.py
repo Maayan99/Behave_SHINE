@@ -146,35 +146,51 @@ def main():
 
     # ── Model ─────────────────────────────────────────────────────────────────
     MetaModelCls = _import_class(cfg.model.metamodel_class_path)
+    ConfigCls = _import_class(cfg.model.config_class_path)
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.tokenizer_from)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # Pass SHINE-specific arguments so they are injected into the vanilla config
+    logger.info(f"Loading config and calculating hypernetwork dimensions...")
+    config = ConfigCls.from_pretrained(cfg.model.model_from)
+
+    # Author's Logic: We need a temp model to calculate the exact lora_numel
+    # to set the correct num_mem_token for the hypernetwork architecture.
+    tmp_model = MetaModelCls.from_pretrained(cfg.model.model_from, config=config)
+    lora_numel = tmp_model.lora_params_numel(cfg.model.lora_r)
+
+    # Calculate num_mem_token using the author's specific ratio
+    computed_mem_tokens = lora_numel * cfg.metanetwork.transformer_cfg.mean_pool_size // (
+                config.hidden_size * config.num_hidden_layers)
+
+    # Inject parameters into both the HF config and the OmegaConf cfg
+    config.num_mem_token = computed_mem_tokens
+    cfg.num_mem_token = computed_mem_tokens
+    cfg.hidden_size = config.hidden_size
+    cfg.num_layers = config.num_hidden_layers
+
+    del tmp_model  # Free VRAM
+    logger.info(f"Automatically set num_mem_token to {computed_mem_tokens}")
 
     logger.info(f"Loading base model from {cfg.model.model_from} ...")
-
-    # 1. Load the vanilla configuration object first
-    model_config = AutoConfig.from_pretrained(cfg.model.model_from)
-
-    # 2. Inject the custom SHINE attributes required by LoraQwen.py
-    model_config.num_mem_token = -1
-    model_config.lora_r = cfg.model.lora_r
-    model_config.metalora_r = cfg.model.metalora_r
-
-    # 3. Instantiate the model using the modified config object
     metamodel = MetaModelCls.from_pretrained(
         cfg.model.model_from,
-        config=model_config,
+        config=config,
         ignore_mismatched_sizes=True
     )
+    metamodel.reset_mem_tokens()
+    metamodel.resize_token_embeddings(len(tokenizer))
 
+    # We pass the ROOT cfg. The Metanetwork class jumps between
+    # cfg.model and cfg.metanetwork.transformer_cfg internally.
     metanetwork = Metanetwork(
         metamodel,
-        cfg.metanetwork.transformer_cfg,
+        cfg,
         metamodel.lora_params_numel(cfg.model.lora_r),
     )
+    metanetwork.to(device)
 
+    
     # ── Checkpoint (warm start) ────────────────────────────────────────────────
     # load_checkpoint internally calls freeze(metamodel) after loading weights
     logger.info(f"Loading pretrained checkpoint from {cfg.paths.pretrained_checkpoint} ...")
