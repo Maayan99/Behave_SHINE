@@ -59,18 +59,22 @@ def run_eval(metanetwork, metalora, eval_loader, device, tokenizer, logger):
                 metalora,
             )
             prompt_ids = batch["prompt_only_ids"][:1].to(device)
-            prompt_attn = (prompt_ids != tokenizer.pad_token_id).long()
+
+            # Strip right-padding — generate() requires left-padding (or no padding).
+            mask = prompt_ids[0] != tokenizer.pad_token_id
+            clean_prompt_ids = prompt_ids[0][mask].unsqueeze(0)
+            clean_prompt_attn = torch.ones_like(clean_prompt_ids)
 
             gen_ids = metanetwork.metamodel.generate(
-                input_ids=prompt_ids,
-                attention_mask=prompt_attn,
+                input_ids=clean_prompt_ids,
+                attention_mask=clean_prompt_attn,
                 loradict=lora_dict,
                 ignore_mem_token=True,
                 max_new_tokens=200,
                 do_sample=False,
             )
 
-            new_tokens = gen_ids[0][prompt_ids.shape[1]:]
+            new_tokens = gen_ids[0][clean_prompt_ids.shape[1]:]
             prediction = tokenizer.decode(new_tokens, skip_special_tokens=True)
             target = batch["raw_answer"][0]
 
@@ -91,6 +95,10 @@ def run_eval(metanetwork, metalora, eval_loader, device, tokenizer, logger):
             print("PREDICTION (8B + BehaveSHINE):")
             print(prediction)
             print(sep + "\n")
+
+            # Free generation tensors to prevent OOM on the subsequent dense forward pass
+            del lora_dict, clean_prompt_ids, clean_prompt_attn, gen_ids
+            torch.cuda.empty_cache()
 
         # ── Standard loss eval ───────────────────────────────────────────────
         lora_dict = metanetwork.generate_lora_dict(
@@ -138,6 +146,8 @@ def main():
     # ── Model ─────────────────────────────────────────────────────────────────
     MetaModelCls = _import_class(cfg.model.metamodel_class_path)
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.tokenizer_from)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
 
     logger.info(f"Loading base model from {cfg.model.model_from} ...")
     metamodel = MetaModelCls.from_pretrained(cfg.model.model_from)
@@ -230,23 +240,28 @@ def main():
             attention_mask = batch["attention_mask"].to(device, non_blocking=True)
             labels = batch["labels"].to(device, non_blocking=True)
 
-            # ── Forward ──────────────────────────────────────────────────────
-            # metanetwork.forward() runs both stages:
-            #   1. evidence → generate_lora_dict (hypernetwork step)
-            #   2. input_ids + loradict + labels → LM forward (complementation step)
-            outputs = metanetwork(
+            # ── Forward (explicit two-step) ───────────────────────────────────
+            # We bypass metanetwork.forward() to avoid any internal logic from the
+            # original replacement objective that could strip or modify input_ids.
+            # Step 1: generate LoRA weights from the system prompt (evidence)
+            lora_dict = metanetwork.generate_lora_dict(
+                evidence_ids,
+                evidence_mask,
+                metalora,
+                use_gradient_checkpoint=cfg.run.use_gradient_checkpoint,
+            )
+            # Step 2: forward pass with the generated LoRA + system prompt in context
+            outputs = metanetwork.metamodel(
                 input_ids=input_ids,
-                input_attention_mask=attention_mask,
-                evidence_ids=evidence_ids,
-                evidence_attention_mask=evidence_mask,
+                attention_mask=attention_mask,
                 labels=labels,
-                metalora=metalora,
+                loradict=lora_dict,
+                ignore_mem_token=True,
                 use_gradient_checkpoint=cfg.run.use_gradient_checkpoint,
             )
 
             loss = outputs.loss
-            reg_loss = outputs.reg_loss
-            backward_loss = (loss + reg_loss) / cfg.run.gradient_accumulation_steps
+            backward_loss = loss / cfg.run.gradient_accumulation_steps
 
             # ── Backward ─────────────────────────────────────────────────────
             valid_tokens = (labels != -100).sum().item()
@@ -276,11 +291,9 @@ def main():
                     lr = scheduler.get_last_lr()[0]
                     logger.info(
                         f"Epoch {epoch}  Step {step}  GlobalStep {global_step}  "
-                        f"Loss {loss.item():.4f}  RegLoss {reg_loss.item():.6f}  "
-                        f"AvgLoss {avg_loss:.4f}  LR {lr:.2e}"
+                        f"Loss {loss.item():.4f}  AvgLoss {avg_loss:.4f}  LR {lr:.2e}"
                     )
                     writer.add_scalar("train/loss", loss.item(), global_step)
-                    writer.add_scalar("train/reg_loss", reg_loss.item(), global_step)
                     writer.add_scalar("train/lr", lr, global_step)
 
                 # ── Mid-epoch checkpoint & eval ───────────────────────────────

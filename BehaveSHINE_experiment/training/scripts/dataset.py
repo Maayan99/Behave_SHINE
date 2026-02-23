@@ -82,7 +82,6 @@ class BehaveSHINECollator:
                 tokenize=True,
                 enable_thinking=False,
             )
-            prompt_len = len(prompt_only_tokens)
 
             # Full tokens (system + user + assistant response)
             full_msgs = prompt_msgs + [{"role": "assistant", "content": item["answer"]}]
@@ -92,8 +91,16 @@ class BehaveSHINECollator:
                 enable_thinking=False,
             )
 
-            # Labels: -100 for prompt portion, real token IDs for response
-            labels = [-100] * prompt_len + full_tokens[prompt_len:]
+            # Labels: backward-counting method — avoids chat template boundary mismatch.
+            # Tokenize only the raw answer text to get the response length, then mask
+            # everything before it. The +1 accounts for the <|im_end|> appended by the
+            # chat template after the assistant turn.
+            answer_tokens = self.tokenizer.encode(
+                item["answer"], add_special_tokens=False
+            )
+            target_len = len(answer_tokens)
+            mask_len = len(full_tokens) - target_len - 1
+            labels = [-100] * mask_len + full_tokens[-(target_len + 1):]
 
             # Truncate to conversation_max_length
             full_tokens = full_tokens[:L]
