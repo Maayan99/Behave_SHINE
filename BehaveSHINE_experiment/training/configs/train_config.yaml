@@ -67,7 +67,7 @@ training:
   max_grad_norm: 1.0
 
   # Difficulty-aware loss weighting
-  use_difficulty_weighting: true
+  use_difficulty_weighting: false
 
   # Logging
   log_every_n_steps: 10
