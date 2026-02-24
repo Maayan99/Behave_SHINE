@@ -833,15 +833,11 @@ for i in range(len(data)):
 
         gt_answer = data[i]["ground_truths"][j]
 
-        if len(gt_answer) > 400: gt_answer = gt_answer[:400] + " [...]"
-
         print(f"  [Ground Truth]     : {gt_answer}\n")
 
         # Base Model + SysPrompt
 
         sys_answer = results_with_sysprompt[i][j + 1]['answer']
-
-        if len(sys_answer) > 400: sys_answer = sys_answer[:400] + " [...]"
 
         print(f"  [Base + SysPrompt] : {sys_answer}\n")
 
@@ -849,8 +845,110 @@ for i in range(len(data)):
 
         shine_answer = results_shine_plus_sysprompt[i][j + 1]['answer']
 
-        if len(shine_answer) > 400: shine_answer = shine_answer[:400] + " [...]"
-
         print(f"  [SHINE + SysPrompt]: {shine_answer}\n")
 
         print("-" * 40)
+
+
+
+# =========================================================================
+# SAVE FULL RESULTS TO FILE
+# =========================================================================
+
+from datetime import datetime
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+out_dir = "./BehaveSHINE_experiment/eval_outputs"
+os.makedirs(out_dir, exist_ok=True)
+
+json_path = os.path.join(out_dir, f"multiturn_eval_{timestamp}.json")
+txt_path = os.path.join(out_dir, f"multiturn_eval_{timestamp}.txt")
+
+# Build structured payload
+full_results = {
+    "metadata": {
+        "timestamp": timestamp,
+        "checkpoint_path": ckpt_path,
+        "model_from": cfg.model.model_from,
+        "tokenizer_from": cfg.model.tokenizer_from,
+        "max_new_tokens": 500,
+        "conversation_max_length": int(cfg.test.conversation_max_length),
+        "context_max_length": int(cfg.test.context_max_length),
+        "num_conversations": len(data),
+    },
+    "conversations": []
+}
+
+for i in range(len(data)):
+    conv_obj = {
+        "conversation_index": i,
+        "context": data[i]["context"],
+        "turns": []
+    }
+
+    for j in range(len(data[i]["questions"])):
+        # Pull out base + SHINE turn objects (j+1 because index 0 is the initial-message log)
+        base_turn = results_with_sysprompt[i][j + 1]
+        shine_turn = results_shine_plus_sysprompt[i][j + 1]
+
+        turn_obj = {
+            "turn_index": j + 1,
+            "question": data[i]["questions"][j],
+            "ground_truth": data[i]["ground_truths"][j],
+
+            "base_sysprompt": {
+                "think": base_turn.get("think", ""),
+                "answer": base_turn.get("answer", "")
+            },
+
+            "shine_sysprompt": {
+                "think": shine_turn.get("think", ""),
+                "answer": shine_turn.get("answer", "")
+            }
+        }
+        conv_obj["turns"].append(turn_obj)
+
+    full_results["conversations"].append(conv_obj)
+
+# Save JSON
+with open(json_path, "w", encoding="utf-8") as f:
+    json.dump(full_results, f, ensure_ascii=False, indent=2)
+
+logger.info(f"Saved structured results JSON to: {json_path}")
+
+# Save readable text dump (optional but super useful)
+with open(txt_path, "w", encoding="utf-8") as f:
+    f.write("=" * 80 + "\n")
+    f.write("RESULTS — 3-WAY MULTI-TURN COMPARISON\n")
+    f.write("=" * 80 + "\n\n")
+
+    for i in range(len(data)):
+        f.write("=" * 60 + "\n")
+        f.write(f"--- Conversation {i + 1} ---\n")
+        ctx_preview = data[i]['context'][:300].replace('\n', ' ') + "..."
+        f.write(f"System Prompt Overview: {ctx_preview}\n")
+        f.write("=" * 60 + "\n")
+
+        for j in range(len(data[i]["questions"])):
+            gt_answer = data[i]["ground_truths"][j]
+            base_turn = results_with_sysprompt[i][j + 1]
+            shine_turn = results_shine_plus_sysprompt[i][j + 1]
+
+            f.write(f"\n[Turn {j + 1}] User: {data[i]['questions'][j]}\n\n")
+
+            f.write(f"[Ground Truth]\n{gt_answer}\n\n")
+
+            if base_turn.get("think", ""):
+                f.write(f"[Base + SysPrompt THINK]\n{base_turn['think']}\n\n")
+            f.write(f"[Base + SysPrompt ANSWER]\n{base_turn.get('answer', '')}\n\n")
+
+            if shine_turn.get("think", ""):
+                f.write(f"[SHINE + SysPrompt THINK]\n{shine_turn['think']}\n\n")
+            f.write(f"[SHINE + SysPrompt ANSWER]\n{shine_turn.get('answer', '')}\n\n")
+
+            f.write("-" * 40 + "\n")
+
+logger.info(f"Saved readable results TXT to: {txt_path}")
+
+print(f"\nSaved JSON results to: {json_path}")
+print(f"Saved TXT results to : {txt_path}")
