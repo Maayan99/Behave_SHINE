@@ -194,6 +194,7 @@ def main():
     config.num_mem_token = 148
     config.lora_r = cfg.model.lora_r
     config.metalora_r = cfg.model.metalora_r
+    config.use_cache = False
 
     logger.info(f"Loading base model from {cfg.model.model_from} ...")
     metamodel = MetaModelCls.from_pretrained(
