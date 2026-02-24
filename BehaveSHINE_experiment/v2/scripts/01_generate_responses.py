@@ -4,6 +4,12 @@
 For each (system_prompt, question) pair, calls both models concurrently and writes
 results to v2/data/raw/responses_{32b,8b}.jsonl.
 
+Architecture: queue-based worker pool with buffered I/O.
+  - N async workers pull items from a work queue and call both APIs concurrently
+  - Per-provider semaphores cap concurrent HTTP requests independently
+  - A single writer task drains a result queue, buffers records, and flushes to disk
+  - Graceful Ctrl+C: stops accepting work, lets in-flight requests finish, flushes
+
 Resume-safe: on startup, loads existing question_ids from output files and skips them.
 
 Usage:
@@ -16,7 +22,10 @@ Usage:
 
 import argparse
 import asyncio
+import json
+import logging
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -24,7 +33,7 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 sys.path.insert(0, str(Path(__file__).parent))
-from utils import append_jsonl, get_existing_ids, load_jsonl, setup_logging
+from utils import get_existing_ids, load_jsonl, setup_logging
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +123,17 @@ def build_work_items(
     return items
 
 
+def flush_buffer(path: str, buffer: list[dict]) -> None:
+    """Append all buffered records to a JSONL file in one write, then clear buffer."""
+    if not buffer:
+        return
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "a", encoding="utf-8") as f:
+        f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in buffer)
+    buffer.clear()
+
+
 # ---------------------------------------------------------------------------
 # Async generation
 # ---------------------------------------------------------------------------
@@ -187,56 +207,139 @@ async def generate_dual(
     return dict(zip(tasks.keys(), results))
 
 
+# ---------------------------------------------------------------------------
+# Pipeline: queue-based workers + buffered writer
+# ---------------------------------------------------------------------------
+
 async def run_generation(
     items: list[dict],
     clients: dict[str, AsyncOpenAI],
     active_models: list[str],
     concurrency: int,
-    batch_save_interval: int,
+    flush_threshold: int,
     output_paths: dict[str, str],
     failed_paths: dict[str, str],
+    shutdown: asyncio.Event,
     logger,
 ) -> None:
     semaphores = {key: asyncio.Semaphore(concurrency) for key in active_models}
     total = len(items)
-    saved = {key: 0 for key in active_models}
-    failed = {key: 0 for key in active_models}
+
+    # Shared mutable state (single-threaded async — no lock needed)
+    buffers: dict[str, dict[str, list]] = {
+        key: {"ok": [], "fail": []} for key in active_models
+    }
+    counters = {key: {"saved": 0, "failed": 0} for key in active_models}
+    done_count = 0
     start = time.time()
 
-    for chunk_start in range(0, total, batch_save_interval):
-        chunk = items[chunk_start: chunk_start + batch_save_interval]
-        tasks = [
-            generate_dual(item, clients, semaphores, active_models, logger)
-            for item in chunk
-        ]
-        results = await asyncio.gather(*tasks)
+    work_queue: asyncio.Queue = asyncio.Queue()
+    result_queue: asyncio.Queue = asyncio.Queue()
 
-        for result_dict, item in zip(results, chunk):
+    for item in items:
+        work_queue.put_nowait(item)
+
+    # -- Workers: pull items, generate, push results -----------------------
+
+    async def worker():
+        while not shutdown.is_set():
+            try:
+                item = work_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            result_dict = await generate_dual(item, clients, semaphores, active_models, logger)
+            await result_queue.put((item, result_dict))
+            work_queue.task_done()
+
+    # -- Writer: drain results, buffer, flush, log progress ----------------
+
+    async def writer():
+        nonlocal done_count
+        last_log_time = start
+
+        def flush_all():
             for key in active_models:
-                result = result_dict[key]
-                if result is not None:
-                    append_jsonl(output_paths[key], result)
-                    saved[key] += 1
-                else:
-                    append_jsonl(failed_paths[key], {
-                        "question_id": item["question_id"],
-                        "sp_id": item["sp_id"],
-                    })
-                    failed[key] += 1
+                flush_buffer(output_paths[key], buffers[key]["ok"])
+                flush_buffer(failed_paths[key], buffers[key]["fail"])
 
-        done = chunk_start + len(chunk)
-        elapsed = time.time() - start
-        rate = done / elapsed if elapsed > 0 else 0
-        eta = (total - done) / rate if rate > 0 else 0
-        stats_str = " | ".join(
-            f"{k}: saved={saved[k]} failed={failed[k]}" for k in active_models
-        )
-        logger.info(
-            f"Progress: {done}/{total} | {stats_str} | "
-            f"{rate:.1f} items/s | ETA {eta/60:.1f}min"
-        )
+        def log_progress():
+            nonlocal last_log_time
+            elapsed = time.time() - start
+            rate = done_count / elapsed if elapsed > 0 else 0
+            eta = (total - done_count) / rate if rate > 0 else 0
+            stats_str = " | ".join(
+                f"{k}: saved={counters[k]['saved']} failed={counters[k]['failed']}"
+                for k in active_models
+            )
+            logger.info(
+                f"Progress: {done_count}/{total} | {stats_str} | "
+                f"{rate:.1f} items/s | ETA {eta / 60:.1f}min"
+            )
+            last_log_time = time.time()
 
-    logger.info(f"Done. {' | '.join(f'{k}: saved={saved[k]} failed={failed[k]}' for k in active_models)}")
+        try:
+            while done_count < total:
+                # Drain with timeout so we can do periodic flushes / progress logs
+                try:
+                    item, result_dict = await asyncio.wait_for(
+                        result_queue.get(), timeout=10.0,
+                    )
+                except asyncio.TimeoutError:
+                    flush_all()
+                    if time.time() - last_log_time >= 10:
+                        log_progress()
+                    continue
+
+                # Buffer results
+                for key in active_models:
+                    result = result_dict[key]
+                    if result is not None:
+                        buffers[key]["ok"].append(result)
+                        counters[key]["saved"] += 1
+                    else:
+                        buffers[key]["fail"].append({
+                            "question_id": item["question_id"],
+                            "sp_id": item["sp_id"],
+                        })
+                        counters[key]["failed"] += 1
+                done_count += 1
+
+                # Flush when buffer hits threshold
+                for key in active_models:
+                    if len(buffers[key]["ok"]) >= flush_threshold:
+                        flush_buffer(output_paths[key], buffers[key]["ok"])
+                    if len(buffers[key]["fail"]) >= flush_threshold:
+                        flush_buffer(failed_paths[key], buffers[key]["fail"])
+
+                # Log progress every ~10s
+                if time.time() - last_log_time >= 10:
+                    log_progress()
+        finally:
+            # Always flush remaining records
+            flush_all()
+
+        log_progress()
+
+    # -- Launch pipeline ---------------------------------------------------
+
+    workers = [asyncio.create_task(worker()) for _ in range(concurrency)]
+    writer_task = asyncio.create_task(writer())
+
+    try:
+        await asyncio.gather(*workers)
+        # Workers done — wait for writer to drain remaining results
+        await writer_task
+    finally:
+        # Safety net: flush on any exception path
+        for key in active_models:
+            flush_buffer(output_paths[key], buffers[key]["ok"])
+            flush_buffer(failed_paths[key], buffers[key]["fail"])
+
+    stats_str = " | ".join(
+        f"{k}: saved={counters[k]['saved']} failed={counters[k]['failed']}"
+        for k in active_models
+    )
+    logger.info(f"Done. {stats_str}")
 
 
 # ---------------------------------------------------------------------------
@@ -254,13 +357,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--only-8b", action="store_true",
                         help="Only generate 8B responses.")
     parser.add_argument("--batch-save-interval", type=int, default=50,
-                        help="Chunk size for progress logging (default 50).")
+                        help="Buffer flush threshold: flush to disk every N records (default 50).")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     logger = setup_logging("01_generate_responses")
+
+    # Quiet httpx "HTTP Request ... 200 OK" spam
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     base_dir = Path(__file__).parent.parent
     data_dir = base_dir.parent / "data"
@@ -304,7 +410,6 @@ def main() -> None:
     completed_per_model = {
         key: get_existing_ids(output_paths[key], "question_id") for key in active_models
     }
-    # An item is complete only if ALL active models have it
     if len(active_models) == 1:
         completed_ids = completed_per_model[active_models[0]]
     else:
@@ -321,20 +426,36 @@ def main() -> None:
 
     logger.info(f"Active models: {', '.join(MODELS[k]['name'] for k in active_models)}")
     logger.info(f"Concurrency per provider: {args.concurrency}")
+    logger.info(f"Buffer flush threshold: {args.batch_save_interval} records")
+
+    # Run with graceful shutdown on Ctrl+C
+    shutdown = asyncio.Event()
+    loop = asyncio.new_event_loop()
+
+    def handle_sigint():
+        logger.info("Ctrl+C received — finishing in-flight requests and flushing buffers...")
+        shutdown.set()
+
+    loop.add_signal_handler(signal.SIGINT, handle_sigint)
 
     total_start = time.time()
-    asyncio.run(
-        run_generation(
-            items=items,
-            clients=clients,
-            active_models=active_models,
-            concurrency=args.concurrency,
-            batch_save_interval=args.batch_save_interval,
-            output_paths=output_paths,
-            failed_paths=failed_paths,
-            logger=logger,
+    try:
+        loop.run_until_complete(
+            run_generation(
+                items=items,
+                clients=clients,
+                active_models=active_models,
+                concurrency=args.concurrency,
+                flush_threshold=args.batch_save_interval,
+                output_paths=output_paths,
+                failed_paths=failed_paths,
+                shutdown=shutdown,
+                logger=logger,
+            )
         )
-    )
+    finally:
+        loop.close()
+
     elapsed = time.time() - total_start
     logger.info(f"Total time: {elapsed:.1f}s ({elapsed / 60:.1f}min)")
     for key in active_models:
