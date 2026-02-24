@@ -358,6 +358,7 @@ def main():
                     loradict=lora_dict,
                     ignore_mem_token=True,
                     use_gradient_checkpoint=cfg.run.use_gradient_checkpoint,
+                    use_cache=False,
                 )
 
             # Store LoRA snapshot for diversity analysis (on CPU, no grad)
