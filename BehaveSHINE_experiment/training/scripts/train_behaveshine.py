@@ -374,18 +374,12 @@ def main():
                     use_cache=False,
                 )
 
-            # Store LoRA sketch for diversity analysis (random projection to reduce memory)
+            # Store LoRA snapshot for diversity analysis (on CPU, no grad)
             if global_step % cfg.training.lora_analysis_every_n_steps == 0:
                 with torch.no_grad():
                     lora_tensors = list(_iter_lora_tensors(lora_dict))
                     flat_lora = torch.cat([t.detach().cpu().reshape(-1) for t in lora_tensors])
-                    if lora_projection is None:
-                        gen = torch.Generator().manual_seed(42)
-                        lora_projection = torch.randn(
-                            flat_lora.shape[0], LORA_SKETCH_DIM, generator=gen,
-                        ) / (LORA_SKETCH_DIM ** 0.5)
-                    sketch = flat_lora @ lora_projection
-                    lora_analysis_buffer.append(sketch)
+                    lora_analysis_buffer.append(flat_lora)
 
 
             raw_loss = outputs.loss
