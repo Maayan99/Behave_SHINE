@@ -3,8 +3,8 @@
 run:
   seed: 42
   device: "cuda"
-  use_amp: false
-  gradient_accumulation_steps: 4
+  use_amp: true
+  gradient_accumulation_steps: 1
   use_gradient_checkpoint: false
 
 paths:
@@ -12,7 +12,7 @@ paths:
   train_data: "./BehaveSHINE_experiment/v2/data/splits/train.jsonl"
   eval_data: "./BehaveSHINE_experiment/v2/data/splits/eval.jsonl"
   output_dir: "./BehaveSHINE_experiment/v2/training/checkpoints"
-  pretrained_checkpoint: "./checkpoints/8gpu_8lora_128metalora_lr5e-5_grouppretrain_1150/iftpwc/checkpoint-epoch-2"
+  pretrained_checkpoint: "./checkpoints/8gpu_8lora_128metalora_lr5e-5_grouppretrain_1150/pretrain/checkpoint-epoch-1"
 
 model:
   lora_r: 8
@@ -50,19 +50,19 @@ metanetwork:
     mean_pool_size: 1
     num_layers: 4
     couple_num_layers: 0
-    scale: 0.001
+    scale: 0.008
 
 data:
   context_max_length: 1550
-  conversation_max_length: 3000
-  train_batch_size: 1
-  eval_batch_size: 1
+  conversation_max_length: 2800
+  train_batch_size: 16
+  eval_batch_size: 32
   num_workers: 4
 
 training:
   num_epochs: 3
-  learning_rate: 5.0e-5
-  warmup_steps: 100
+  learning_rate: 9.0e-5
+  warmup_steps: 300
   weight_decay: 0.01
   max_grad_norm: 1.0
 
