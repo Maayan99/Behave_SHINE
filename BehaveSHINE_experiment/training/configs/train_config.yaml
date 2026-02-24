@@ -1,0 +1,87 @@
+# BehaveSHINE v2 Training Configuration
+
+run:
+  seed: 42
+  device: "cuda"
+  use_amp: false
+  gradient_accumulation_steps: 4
+  use_gradient_checkpoint: false
+
+paths:
+  model_path: "./models/Qwen3-8B"
+  train_data: "./BehaveSHINE_experiment/v2/data/splits/train.jsonl"
+  eval_data: "./BehaveSHINE_experiment/v2/data/splits/eval.jsonl"
+  output_dir: "./BehaveSHINE_experiment/v2/training/checkpoints"
+  pretrained_checkpoint: "./checkpoints/8gpu_8lora_128metalora_lr5e-5_grouppretrain_1150/iftpwc/checkpoint-epoch-2"
+
+model:
+  lora_r: 8
+  metalora_r: 128
+  metamodel_class_path: "LoraQwen.LoraQwen3ForCausalLM"
+  config_class_path: "LoraQwen.Qwen3Config"
+  tokenizer_from: "./models/Qwen3-8B"
+  model_from: "./models/Qwen3-8B"
+
+metanetwork:
+  type: "transformer"
+  method: "rl"
+  transformer_cfg:
+    encoder_cfg:
+      d_model: 4096
+      nhead: 32
+      dim_feedforward: 8192
+      dropout: 0
+      activation: "gelu"
+      layer_norm_eps: 0.00001
+      batch_first: true
+      norm_first: false
+      bias: true
+    couple_encoder_cfg:
+      d_model: 4096
+      nhead: 32
+      dim_feedforward: 8192
+      dropout: 0
+      activation: "gelu"
+      layer_norm_eps: 0.00001
+      batch_first: true
+      norm_first: false
+      bias: true
+    layer_transformer_first: true
+    mean_pool_size: 1
+    num_layers: 4
+    couple_num_layers: 0
+    scale: 0.001
+
+data:
+  context_max_length: 1550
+  conversation_max_length: 3000
+  train_batch_size: 1
+  eval_batch_size: 1
+  num_workers: 4
+
+training:
+  num_epochs: 3
+  learning_rate: 5.0e-5
+  warmup_steps: 100
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+  # Difficulty-aware loss weighting
+  use_difficulty_weighting: true
+
+  # Logging
+  log_every_n_steps: 10
+  loss_window_size: 50
+
+  # LoRA diversity analysis
+  lora_analysis_every_n_steps: 50
+  lora_buffer_size: 50
+
+  # Evaluation — two tiers
+  quick_eval_every_n_steps: 100
+  quick_eval_num_examples: 50
+  full_eval_every_n_steps: 500
+  full_eval_num_generations: 3
+
+  # Checkpointing — keep all
+  save_every_n_steps: 250

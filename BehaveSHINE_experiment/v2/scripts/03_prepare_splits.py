@@ -22,6 +22,31 @@ from utils import load_jsonl, setup_logging, write_jsonl
 
 
 # ---------------------------------------------------------------------------
+# Difficulty weight computation
+# ---------------------------------------------------------------------------
+
+def compute_difficulty_weight(filter_metrics: dict) -> float:
+    """
+    Weight training examples by how badly 8B diverged from 32B.
+
+    Higher weight = 8B failed more = more useful training signal.
+    Returns float in [0.5, 2.0].
+
+    - Identical responses -> 0.5 (low priority but still trained on)
+    - Moderately different -> ~1.25 (normal priority)
+    - Completely different -> 2.0 (high priority)
+    """
+    norm_edit = filter_metrics.get("norm_edit_distance", 0.5)
+    jaccard = filter_metrics.get("jaccard_similarity", 0.5)
+
+    edit_score = norm_edit                    # 0=identical, 1=completely different
+    content_score = 1.0 - jaccard            # 0=identical content, 1=no overlap
+    raw_difficulty = 0.6 * edit_score + 0.4 * content_score   # weighted average
+    weight = 0.5 + 1.5 * raw_difficulty      # map to [0.5, 2.0]
+    return round(weight, 4)
+
+
+# ---------------------------------------------------------------------------
 # Data loading and joining
 # ---------------------------------------------------------------------------
 
@@ -65,6 +90,14 @@ def load_and_join(
                 "sp_id": sp_id,
             }
 
+    # Filter record lookup (for metrics)
+    filter_lookup = {}
+    for r in filter_records:
+        filter_lookup[r["question_id"]] = {
+            "edit_distance": r.get("edit_distance"),
+            "trigram_jaccard": r.get("trigram_jaccard"),
+        }
+
     # Get kept question_ids from filter
     kept_ids = {r["question_id"] for r in filter_records if r.get("kept", False)}
     logger.info(f"  Kept pairs from filter: {len(kept_ids)}")
@@ -87,16 +120,30 @@ def load_and_join(
             missing += 1
             continue
 
+        # Build filter_metrics and difficulty_weight
+        fr = filter_lookup.get(q_id, {})
+        answer_8b_text = resp_8b["answer"] if resp_8b else ""
+        answer_32b_text = resp_32b["answer"]
+
+        filter_metrics = {
+            "norm_edit_distance": fr.get("edit_distance", 0.5),
+            "jaccard_similarity": fr.get("trigram_jaccard", 0.5),
+            "length_ratio": len(answer_32b_text) / max(len(answer_8b_text), 1),
+        }
+        difficulty_weight = compute_difficulty_weight(filter_metrics)
+
         examples.append({
             "context": sp["system_prompt"],
             "question": q_info["question_text"],
-            "answer": resp_32b["answer"],
-            "answer_8b": resp_8b["answer"] if resp_8b else "",
+            "answer": answer_32b_text,
+            "answer_8b": answer_8b_text,
+            "difficulty_weight": difficulty_weight,
+            "filter_metrics": filter_metrics,
             "system_prompt_id": q_info["sp_id"],
             "question_id": q_id,
             "category": sp.get("category", ""),
             "question_type": q_info["question_type"],
-            "difficulty": q_info["difficulty"],
+            "question_difficulty": q_info["difficulty"],
         })
 
     logger.info(f"  {len(examples)} joined examples, {missing} missing data skipped")
@@ -175,7 +222,7 @@ def compute_stats(
         "avg_answer_chars": avg_len(all_examples, "answer"),
         "category_distribution": count_field(all_examples, "category"),
         "question_type_distribution": count_field(all_examples, "question_type"),
-        "difficulty_distribution": count_field(all_examples, "difficulty"),
+        "difficulty_distribution": count_field(all_examples, "question_difficulty"),
     }
 
 
