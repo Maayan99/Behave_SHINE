@@ -4,8 +4,8 @@ run:
   seed: 42
   device: "cuda"
   use_amp: true
-  gradient_accumulation_steps: 1
-  use_gradient_checkpoint: false
+  gradient_accumulation_steps: 2
+  use_gradient_checkpoint: true
 
 paths:
   model_path: "./models/Qwen3-8B"
@@ -55,8 +55,8 @@ metanetwork:
 data:
   context_max_length: 1550
   conversation_max_length: 2800
-  train_batch_size: 16
-  eval_batch_size: 32
+  train_batch_size: 8
+  eval_batch_size: 16
   num_workers: 4
 
 training:
