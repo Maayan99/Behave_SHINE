@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Script 01: Generate dual responses via Qwen3-32B (Nebius) and Qwen3-8B (SiliconFlow).
+"""Script 01: Generate dual responses via Qwen3-32B (Nebius) and Qwen3-8B (HuggingFace).
 
 For each (system_prompt, question) pair, calls both models concurrently and writes
 results to v2/data/raw/responses_{32b,8b}.jsonl.
@@ -38,9 +38,9 @@ MODELS = {
         "base_url": "https://api.studio.nebius.com/v1/",
     },
     "8b": {
-        "name": "Qwen/Qwen3-8B",
-        "env_key": "SILICONFLOW_API_KEY",
-        "base_url": "https://api.siliconflow.cn/v1",
+        "name": "Qwen/Qwen3-8B:nscale",
+        "env_key": "HF_TOKEN",
+        "base_url": "https://router.huggingface.co/v1",
     },
 }
 
