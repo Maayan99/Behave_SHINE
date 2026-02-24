@@ -819,7 +819,7 @@ for i in range(len(data)):
 
     print(f"--- Conversation {i + 1} ---")
 
-    ctx_preview = data[i]['context'][:150].replace('\n', ' ') + "..."
+    ctx_preview = data[i]['context']
 
     print(f"System Prompt Overview: {ctx_preview}\n")
 
