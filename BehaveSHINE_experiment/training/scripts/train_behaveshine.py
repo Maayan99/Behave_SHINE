@@ -59,6 +59,15 @@ def compute_grad_norm(params):
     return total_norm_sq ** 0.5
 
 
+def _iter_lora_tensors(d):
+    """Recursively yield all tensors from a nested lora dict."""
+    for v in d.values():
+        if isinstance(v, dict):
+            yield from _iter_lora_tensors(v)
+        elif isinstance(v, torch.Tensor):
+            yield v
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Evaluation
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,7 +198,8 @@ def main():
     metamodel = MetaModelCls.from_pretrained(
         cfg.model.model_from,
         config=config,
-        ignore_mismatched_sizes=True
+        ignore_mismatched_sizes=True,
+        torch_dtype=torch.bfloat16,
     )
 
     # 2. NOW we get the real, exact numel from the loaded model
@@ -217,6 +227,14 @@ def main():
         real_lora_numel,
     )
     metanetwork.to(device)
+
+    # Cast trainable metanetwork encoder to float32 for stable training
+    metanetwork.metanetwork.float()
+
+    # Verify dtypes
+    base_param = next(metanetwork.metamodel.parameters())
+    encoder_param = next(metanetwork.metanetwork.parameters())
+    logger.info(f"Base model dtype: {base_param.dtype}  Metanetwork encoder dtype: {encoder_param.dtype}")
 
     # ── Checkpoint (warm start) ────────────────────────────────────────────────
     # load_checkpoint internally calls freeze(metamodel) after loading weights
@@ -307,6 +325,7 @@ def main():
 
     # ── Training Loop ─────────────────────────────────────────────────────────
     global_step = 0
+    accum_start_time = time.time()
 
     for epoch in range(cfg.training.num_epochs):
         metanetwork.train()
@@ -314,7 +333,8 @@ def main():
         epoch_tokens = 0
 
         for step, batch in enumerate(train_loader):
-            step_start_time = time.time()
+            if step % cfg.run.gradient_accumulation_steps == 0:
+                accum_start_time = time.time()
 
             evidence_ids = batch["evidence_ids"].to(device, non_blocking=True)
             evidence_mask = batch["evidence_attention_mask"].to(device, non_blocking=True)
@@ -331,11 +351,13 @@ def main():
 
             # Store LoRA snapshot for diversity analysis (on CPU, no grad)
             with torch.no_grad():
-                flat_lora = torch.cat([
-                    v.detach().cpu().reshape(-1)
-                    for v in lora_dict.values()
-                    if isinstance(v, torch.Tensor)
-                ])
+                lora_tensors = list(_iter_lora_tensors(lora_dict))
+                if global_step == 0 and step == 0:
+                    logger.info(
+                        f"[DEBUG] lora_dict flattening: {len(lora_tensors)} tensors, "
+                        f"shapes: {[t.shape for t in lora_tensors[:5]]}{'...' if len(lora_tensors) > 5 else ''}"
+                    )
+                flat_lora = torch.cat([t.detach().cpu().reshape(-1) for t in lora_tensors])
                 lora_analysis_buffer.append(flat_lora)
 
             outputs = metanetwork.metamodel(
@@ -392,7 +414,7 @@ def main():
                 scheduler.step()
                 global_step += 1
 
-                step_elapsed = time.time() - step_start_time
+                step_elapsed = time.time() - accum_start_time
 
                 # ── Logging ───────────────────────────────────────────────────
                 if global_step % cfg.training.log_every_n_steps == 0:
@@ -443,6 +465,8 @@ def main():
                     writer.add_scalar("perf/step_time_seconds", step_elapsed, global_step)
                     writer.add_scalar("perf/tokens_per_second", valid_tokens / max(step_elapsed, 1e-6), global_step)
 
+                    writer.flush()
+
                 # ── LoRA diversity analysis ───────────────────────────────────
                 if global_step % cfg.training.lora_analysis_every_n_steps == 0 and len(lora_analysis_buffer) >= 10:
                     lora_vectors = torch.stack(list(lora_analysis_buffer))  # (N, D)
@@ -482,6 +506,7 @@ def main():
                     )
                     logger.info(f"[Quick Eval] GStep {global_step}  Loss {qe_loss:.4f}")
                     writer.add_scalar("eval/quick_loss", qe_loss, global_step)
+                    writer.flush()
 
                 # ── Full eval ─────────────────────────────────────────────────
                 if global_step % cfg.training.full_eval_every_n_steps == 0:
@@ -492,6 +517,7 @@ def main():
                     )
                     logger.info(f"[Full Eval] GStep {global_step}  Loss {fe_loss:.4f}")
                     writer.add_scalar("eval/full_loss", fe_loss, global_step)
+                    writer.flush()
 
                 # ── Checkpoint ────────────────────────────────────────────────
                 if global_step % cfg.training.save_every_n_steps == 0:
