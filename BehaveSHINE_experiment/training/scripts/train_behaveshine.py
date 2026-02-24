@@ -24,6 +24,7 @@ import time
 from collections import deque
 
 import torch
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -135,18 +136,19 @@ def run_eval(metanetwork, metalora, eval_loader, device, tokenizer, logger,
             del lora_dict, clean_prompt, clean_attn, gen_ids
             torch.cuda.empty_cache()
 
-            # ── Loss computation ─────────────────────────────────────────────
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                lora_dict = metanetwork.generate_lora_dict(
-                    evidence_ids, evidence_mask, metalora,
-                )
-                outputs = metanetwork.metamodel(
-                    input_ids=batch["input_ids"].to(device),
-                    attention_mask=batch["attention_mask"].to(device),
-                    labels=batch["labels"].to(device),
-                    loradict=lora_dict,
-                    ignore_mem_token=True,
-                )
+        # ── Loss computation (always runs, independent of generation) ─────
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            lora_dict = metanetwork.generate_lora_dict(
+                evidence_ids, evidence_mask, metalora,
+            )
+            outputs = metanetwork.metamodel(
+                input_ids=batch["input_ids"].to(device),
+                attention_mask=batch["attention_mask"].to(device),
+                labels=batch["labels"].to(device),
+                loradict=lora_dict,
+                ignore_mem_token=True,
+                use_cache=False,
+            )
 
         valid_tokens = (batch["labels"] != -100).sum().item()
         total_loss += outputs.loss.item() * valid_tokens
@@ -281,12 +283,20 @@ def main():
     logger.info(f"Train examples: {len(train_dataset)}  Eval examples: {len(eval_dataset)}")
 
     # ── Optimizer & Scheduler ─────────────────────────────────────────────────
+    # Separate bias/norm params from weight decay (standard best practice)
+    decay_params = []
+    no_decay_params = []
+    no_decay_keywords = {'bias', 'LayerNorm', 'layer_norm', 'ln_'}
+    for name, param in metanetwork.metanetwork.named_parameters():
+        if any(kw in name for kw in no_decay_keywords):
+            no_decay_params.append(param)
+        else:
+            decay_params.append(param)
+
     optimizer = torch.optim.AdamW(
         [
-            {
-                "params": list(metanetwork.metanetwork.parameters()),
-                "weight_decay": cfg.training.weight_decay,
-            },
+            {"params": decay_params, "weight_decay": cfg.training.weight_decay},
+            {"params": no_decay_params, "weight_decay": 0.0},
             {
                 "params": list(iter_learnable_tensors(metalora)),
                 "weight_decay": cfg.training.weight_decay,
@@ -309,6 +319,8 @@ def main():
     loss_window = deque(maxlen=cfg.training.loss_window_size)
     loss_weighted_window = deque(maxlen=cfg.training.loss_window_size)
     lora_analysis_buffer = deque(maxlen=cfg.training.lora_buffer_size)
+    lora_projection = None  # lazy-init random projection for LoRA sketches
+    LORA_SKETCH_DIM = 2048
 
     # ── Quick eval subset ─────────────────────────────────────────────────────
     quick_eval_size = min(
@@ -362,20 +374,36 @@ def main():
                     use_cache=False,
                 )
 
-            # Store LoRA snapshot for diversity analysis (on CPU, no grad)
+            # Store LoRA sketch for diversity analysis (random projection to reduce memory)
             if global_step % cfg.training.lora_analysis_every_n_steps == 0:
                 with torch.no_grad():
                     lora_tensors = list(_iter_lora_tensors(lora_dict))
                     flat_lora = torch.cat([t.detach().cpu().reshape(-1) for t in lora_tensors])
-                    lora_analysis_buffer.append(flat_lora)
+                    if lora_projection is None:
+                        gen = torch.Generator().manual_seed(42)
+                        lora_projection = torch.randn(
+                            flat_lora.shape[0], LORA_SKETCH_DIM, generator=gen,
+                        ) / (LORA_SKETCH_DIM ** 0.5)
+                    sketch = flat_lora @ lora_projection
+                    lora_analysis_buffer.append(sketch)
 
 
             raw_loss = outputs.loss
             reg_loss = getattr(outputs, 'reg_loss', None)
 
-            # ── Difficulty-aware weighting ────────────────────────────────────
+            # ── Difficulty-aware weighting (per-example) ──────────────────────
             if cfg.training.get("use_difficulty_weighting", True):
-                weighted_loss = raw_loss * difficulty_w.mean()
+                logits = outputs.logits
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+                per_token_loss = F.cross_entropy(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1),
+                    reduction='none',
+                ).view(shift_labels.size())
+                token_mask = (shift_labels != -100).float()
+                per_example_loss = (per_token_loss * token_mask).sum(dim=1) / token_mask.sum(dim=1).clamp(min=1)
+                weighted_loss = (per_example_loss * difficulty_w).mean()
             else:
                 weighted_loss = raw_loss
 
