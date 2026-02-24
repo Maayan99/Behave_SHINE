@@ -94,23 +94,23 @@ def run_eval(metanetwork, metalora, eval_loader, device, tokenizer, logger,
 
         # ── Generation previews ──────────────────────────────────────────
         if generations_done < num_generations:
-            lora_dict = metanetwork.generate_lora_dict(
-                evidence_ids[:1], evidence_mask[:1], metalora,
-            )
-            prompt_ids = batch["prompt_only_ids"][:1].to(device)
-            mask = prompt_ids[0] != tokenizer.pad_token_id
-            clean_prompt = prompt_ids[0][mask].unsqueeze(0)
-            clean_attn = torch.ones_like(clean_prompt)
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                lora_dict = metanetwork.generate_lora_dict(
+                    evidence_ids[:1], evidence_mask[:1], metalora,
+                )
+                prompt_ids = batch["prompt_only_ids"][:1].to(device)
+                mask = prompt_ids[0] != tokenizer.pad_token_id
+                clean_prompt = prompt_ids[0][mask].unsqueeze(0)
+                clean_attn = torch.ones_like(clean_prompt)
 
-            gen_ids = metanetwork.metamodel.generate(
-                input_ids=clean_prompt,
-                attention_mask=clean_attn,
-                loradict=lora_dict,
-                ignore_mem_token=True,
-                max_new_tokens=200,
-                do_sample=False,
-            )
-
+                gen_ids = metanetwork.metamodel.generate(
+                    input_ids=clean_prompt,
+                    attention_mask=clean_attn,
+                    loradict=lora_dict,
+                    ignore_mem_token=True,
+                    max_new_tokens=200,
+                    do_sample=False,
+                )
             new_tokens = gen_ids[0][clean_prompt.shape[1]:]
             prediction = tokenizer.decode(new_tokens, skip_special_tokens=True)
             target = batch["raw_answer"][0]
@@ -135,17 +135,18 @@ def run_eval(metanetwork, metalora, eval_loader, device, tokenizer, logger,
             del lora_dict, clean_prompt, clean_attn, gen_ids
             torch.cuda.empty_cache()
 
-        # ── Loss computation ─────────────────────────────────────────────
-        lora_dict = metanetwork.generate_lora_dict(
-            evidence_ids, evidence_mask, metalora,
-        )
-        outputs = metanetwork.metamodel(
-            input_ids=batch["input_ids"].to(device),
-            attention_mask=batch["attention_mask"].to(device),
-            labels=batch["labels"].to(device),
-            loradict=lora_dict,
-            ignore_mem_token=True,
-        )
+            # ── Loss computation ─────────────────────────────────────────────
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                lora_dict = metanetwork.generate_lora_dict(
+                    evidence_ids, evidence_mask, metalora,
+                )
+                outputs = metanetwork.metamodel(
+                    input_ids=batch["input_ids"].to(device),
+                    attention_mask=batch["attention_mask"].to(device),
+                    labels=batch["labels"].to(device),
+                    loradict=lora_dict,
+                    ignore_mem_token=True,
+                )
 
         valid_tokens = (batch["labels"] != -100).sum().item()
         total_loss += outputs.loss.item() * valid_tokens
@@ -344,30 +345,28 @@ def main():
             difficulty_w = batch["difficulty_weight"].to(device, non_blocking=True)
 
             # ── Forward ───────────────────────────────────────────────────────
-            lora_dict = metanetwork.generate_lora_dict(
-                evidence_ids, evidence_mask, metalora,
-                use_gradient_checkpoint=cfg.run.use_gradient_checkpoint,
-            )
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                lora_dict = metanetwork.generate_lora_dict(
+                    evidence_ids, evidence_mask, metalora,
+                    use_gradient_checkpoint=cfg.run.use_gradient_checkpoint,
+                )
+
+                outputs = metanetwork.metamodel(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                    loradict=lora_dict,
+                    ignore_mem_token=True,
+                    use_gradient_checkpoint=cfg.run.use_gradient_checkpoint,
+                )
 
             # Store LoRA snapshot for diversity analysis (on CPU, no grad)
-            with torch.no_grad():
-                lora_tensors = list(_iter_lora_tensors(lora_dict))
-                if global_step == 0 and step == 0:
-                    logger.info(
-                        f"[DEBUG] lora_dict flattening: {len(lora_tensors)} tensors, "
-                        f"shapes: {[t.shape for t in lora_tensors[:5]]}{'...' if len(lora_tensors) > 5 else ''}"
-                    )
-                flat_lora = torch.cat([t.detach().cpu().reshape(-1) for t in lora_tensors])
-                lora_analysis_buffer.append(flat_lora)
+            if global_step % cfg.training.lora_analysis_every_n_steps == 0:
+                with torch.no_grad():
+                    lora_tensors = list(_iter_lora_tensors(lora_dict))
+                    flat_lora = torch.cat([t.detach().cpu().reshape(-1) for t in lora_tensors])
+                    lora_analysis_buffer.append(flat_lora)
 
-            outputs = metanetwork.metamodel(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-                loradict=lora_dict,
-                ignore_mem_token=True,
-                use_gradient_checkpoint=cfg.run.use_gradient_checkpoint,
-            )
 
             raw_loss = outputs.loss
             reg_loss = getattr(outputs, 'reg_loss', None)
