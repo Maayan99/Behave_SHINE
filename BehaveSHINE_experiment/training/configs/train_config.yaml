@@ -56,7 +56,7 @@ data:
   context_max_length: 1550
   conversation_max_length: 2800
   train_batch_size: 8
-  eval_batch_size: 16
+  eval_batch_size: 8
   num_workers: 4
 
 training:
