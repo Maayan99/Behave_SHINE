@@ -39,6 +39,11 @@ torch.backends.cuda.matmul.allow_tf32 = True
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("eval_random_sample")
 
+# ---------------------------------------------------------------------------
+# Must match training dtype. Training used bfloat16, so eval must too.
+# ---------------------------------------------------------------------------
+EVAL_DTYPE = torch.bfloat16
+
 
 def extract_think_and_answer(text: str) -> Tuple[str, str]:
     think, answer = "", text
@@ -95,12 +100,15 @@ def init_metanetwork(cfg, tokenizer, device):
     gc.collect()
     torch.cuda.empty_cache()
 
-    metamodel = MetaModelCls.from_pretrained(cfg.model.model_from, config=config)
+    # --- FIX: load in bfloat16 to match training ---
+    metamodel = MetaModelCls.from_pretrained(
+        cfg.model.model_from, config=config, torch_dtype=EVAL_DTYPE
+    )
     metamodel.reset_mem_tokens()
     metamodel.resize_token_embeddings(len(tokenizer))
 
     metanetwork = Metanetwork(metamodel, cfg, metamodel.lora_params_numel(cfg.model.lora_r))
-    metanetwork.to(device)
+    metanetwork.to(device=device, dtype=EVAL_DTYPE)
     freeze(metamodel)
     return metanetwork
 
@@ -108,14 +116,16 @@ def init_metanetwork(cfg, tokenizer, device):
 def load_ckpt(metanetwork, ckpt_path, device):
     logger.info(f"Loading checkpoint: {ckpt_path}")
     metanetwork, metalora_ckpt, _ = load_checkpoint(metanetwork, ckpt_path, device)
-    metanetwork = metanetwork.to(device=device, dtype=torch.float32)
-    metalora_ckpt = cast_lora_dict_dtype(metalora_ckpt, device=device, dtype=torch.float32)
+    # --- FIX: keep bfloat16, not float32 ---
+    metanetwork = metanetwork.to(device=device, dtype=EVAL_DTYPE)
+    metalora_ckpt = cast_lora_dict_dtype(metalora_ckpt, device=device, dtype=EVAL_DTYPE)
     return metanetwork, metalora_ckpt
 
 
 def init_vanilla_model(model_path, tokenizer, device):
     logger.info("Loading vanilla baseline model...")
-    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float32)
+    # --- FIX: load baseline in bfloat16 too for fair comparison ---
+    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=EVAL_DTYPE)
     model.resize_token_embeddings(len(tokenizer))
     model.to(device)
     model.eval()
@@ -166,7 +176,8 @@ def run_shine(metanetwork, metalora_ckpt, dataloader, tokenizer, device, max_new
         prompt_mask = (prompt_only_ids != pad_id).long()
 
         lora_dict = metanetwork.generate_lora_dict(evidence_ids, evidence_mask, metalora_ckpt)
-        lora_dict = cast_lora_dict_dtype(lora_dict, device=device, dtype=torch.float32)
+        # --- FIX: keep bfloat16, not float32 ---
+        lora_dict = cast_lora_dict_dtype(lora_dict, device=device, dtype=EVAL_DTYPE)
 
         outputs = metanetwork.metamodel.generate(
             input_ids=prompt_only_ids,
@@ -224,6 +235,7 @@ def save_outputs(samples, baseline_results, shine_results, args):
                 "context_max_length": args.context_max_length,
                 "conversation_max_length": args.conversation_max_length,
                 "metanet_scale": args.scale,
+                "eval_dtype": str(EVAL_DTYPE),
             },
             "results": rows
         }, f, ensure_ascii=False, indent=2)
@@ -266,6 +278,7 @@ def main():
     device = torch.device("cuda")
     set_seed(args.seed)
 
+    logger.info(f"Eval dtype: {EVAL_DTYPE}")
     logger.info(f"Using metanetwork scale from training config: {args.scale}")
 
     tokenizer = init_tokenizer(args.model_path)
@@ -314,6 +327,7 @@ def main():
 
     rng = random.Random(args.seed)
     sampled_indices = rng.sample(list(range(total)), n)
+    logger.info(f"Sampled indices: {sampled_indices}")
     subset = Subset(dataset, sampled_indices)
 
     # For saving metadata we also want raw rows
