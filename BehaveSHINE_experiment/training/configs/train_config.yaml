@@ -50,7 +50,7 @@ metanetwork:
     mean_pool_size: 1
     num_layers: 4
     couple_num_layers: 0
-    scale: 0.005
+    scale: 0.001
 
 data:
   context_max_length: 1550
