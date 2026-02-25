@@ -229,6 +229,8 @@ def run_baseline(vanilla_model, dataloader, tokenizer, device, max_new_tokens):
         prompt_only_ids = batch["prompt_only_ids"].to(device)
         attention_mask = (prompt_only_ids != pad_id).long()
 
+        tokenizer.enable_thinking = False
+
         outputs = vanilla_model.generate(
             input_ids=prompt_only_ids,
             attention_mask=attention_mask,
@@ -236,7 +238,6 @@ def run_baseline(vanilla_model, dataloader, tokenizer, device, max_new_tokens):
             pad_token_id=pad_id,
             eos_token_id=eos_id,
             do_sample=False,
-            enable_thinking=False,
         )
 
         for i in range(outputs.shape[0]):
@@ -250,43 +251,32 @@ def run_baseline(vanilla_model, dataloader, tokenizer, device, max_new_tokens):
 
 
 @torch.no_grad()
-def run_shine(metanetwork, metalora_ckpt, dataloader, tokenizer, device, max_new_tokens):
+def run_baseline(vanilla_model, dataloader, tokenizer, device, max_new_tokens):
     pad_id = tokenizer.pad_token_id
     eos_id = tokenizer.eos_token_id
-    metanetwork.eval()
     results = []
 
-    for batch in tqdm(dataloader, desc="SHINE"):
-        evidence_ids = batch["evidence_ids"].to(device, non_blocking=True)
-        evidence_mask = batch["evidence_attention_mask"].to(device, non_blocking=True)
-
+    for batch in tqdm(dataloader, desc="Baseline"):
         prompt_only_ids = batch["prompt_only_ids"].to(device)
-        prompt_mask = (prompt_only_ids != pad_id).long()
+        attention_mask = (prompt_only_ids != pad_id).long()
 
-        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-            lora_dict = metanetwork.generate_lora_dict(evidence_ids, evidence_mask, metalora_ckpt)
-
-            outputs = metanetwork.metamodel.generate(
-                input_ids=prompt_only_ids,
-                attention_mask=prompt_mask,
-                max_new_tokens=max_new_tokens,
-                pad_token_id=pad_id,
-                eos_token_id=eos_id,
-                do_sample=False,
-                ignore_mem_token=True,
-                loradict=lora_dict,
-                enable_thinking=False
-            )
+        outputs = vanilla_model.generate(
+            input_ids=prompt_only_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            pad_token_id=pad_id,
+            eos_token_id=eos_id,
+            do_sample=False,
+        )
 
         for i in range(outputs.shape[0]):
-            in_len = int(prompt_mask[i].sum().item())
+            in_len = int(attention_mask[i].sum().item())
             new_tokens = outputs[i, in_len:]
             raw = tokenizer.decode(new_tokens, skip_special_tokens=True)
             think, ans = extract_think_and_answer(raw)
             results.append({"think": think, "answer": ans})
 
     return results
-
 
 # ---------------------------------------------------------------------------
 # Output
