@@ -236,6 +236,7 @@ def run_baseline(vanilla_model, dataloader, tokenizer, device, max_new_tokens):
             pad_token_id=pad_id,
             eos_token_id=eos_id,
             do_sample=False,
+            enable_thinking=False,
         )
 
         for i in range(outputs.shape[0]):
@@ -274,6 +275,7 @@ def run_shine(metanetwork, metalora_ckpt, dataloader, tokenizer, device, max_new
                 do_sample=False,
                 ignore_mem_token=True,
                 loradict=lora_dict,
+                enable_thinking=False
             )
 
         for i in range(outputs.shape[0]):
