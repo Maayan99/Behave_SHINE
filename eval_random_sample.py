@@ -117,8 +117,8 @@ def load_ckpt(metanetwork, ckpt_path, device):
     logger.info(f"Loading checkpoint: {ckpt_path}")
     metanetwork, metalora_ckpt, _ = load_checkpoint(metanetwork, ckpt_path, device)
     metanetwork = metanetwork.to(device=device, dtype=EVAL_DTYPE)
-    metalora_ckpt = cast_lora_dict_dtype(metalora_ckpt, device=device, dtype=EVAL_DTYPE)
-    metanetwork.metanetwork.float()  # encoder stays float32, matching training
+    metanetwork.metanetwork.float()  # encoder stays float32
+    metalora_ckpt = cast_lora_dict_dtype(metalora_ckpt, device=device, dtype=torch.float32)  # metalora also float32
     return metanetwork, metalora_ckpt
 
 

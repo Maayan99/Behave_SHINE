@@ -97,12 +97,8 @@ class BehaveSHINECollator:
             # Tokenize only the raw answer text to get the response length, then mask
             # everything before it. The +1 accounts for the <|im_end|> appended by the
             # chat template after the assistant turn.
-            answer_tokens = self.tokenizer.encode(
-                item["answer"], add_special_tokens=False
-            )
-            target_len = len(answer_tokens)
-            mask_len = len(full_tokens) - target_len - 1
-            labels = [-100] * mask_len + full_tokens[-(target_len + 1):]
+            prompt_len = len(prompt_only_tokens)
+            labels = [-100] * prompt_len + full_tokens[prompt_len:]
 
             # Truncate to conversation_max_length
             full_tokens = full_tokens[:L]
