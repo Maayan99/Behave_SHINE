@@ -116,9 +116,9 @@ def init_metanetwork(cfg, tokenizer, device):
 def load_ckpt(metanetwork, ckpt_path, device):
     logger.info(f"Loading checkpoint: {ckpt_path}")
     metanetwork, metalora_ckpt, _ = load_checkpoint(metanetwork, ckpt_path, device)
-    # --- FIX: keep bfloat16, not float32 ---
     metanetwork = metanetwork.to(device=device, dtype=EVAL_DTYPE)
     metalora_ckpt = cast_lora_dict_dtype(metalora_ckpt, device=device, dtype=EVAL_DTYPE)
+    metanetwork.metanetwork.float()  # encoder stays float32, matching training
     return metanetwork, metalora_ckpt
 
 
@@ -175,9 +175,8 @@ def run_shine(metanetwork, metalora_ckpt, dataloader, tokenizer, device, max_new
         prompt_only_ids = batch["prompt_only_ids"].to(device)
         prompt_mask = (prompt_only_ids != pad_id).long()
 
-        lora_dict = metanetwork.generate_lora_dict(evidence_ids, evidence_mask, metalora_ckpt)
-        # --- FIX: keep bfloat16, not float32 ---
-        lora_dict = cast_lora_dict_dtype(lora_dict, device=device, dtype=EVAL_DTYPE)
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            lora_dict = metanetwork.generate_lora_dict(evidence_ids, evidence_mask, metalora_ckpt)        # --- FIX: keep bfloat16, not float32 ---
 
         outputs = metanetwork.metamodel.generate(
             input_ids=prompt_only_ids,
