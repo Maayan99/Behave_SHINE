@@ -78,8 +78,9 @@ training:
   lora_buffer_size: 10
 
   # Evaluation — two tiers
-  quick_eval_every_n_steps: 100
-  quick_eval_num_examples: 50
+  quick_eval_every_n_steps: 75
+  quick_eval_num_examples: 15
+  quick_eval_num_generations: 1
   full_eval_every_n_steps: 500
   full_eval_num_generations: 3
 

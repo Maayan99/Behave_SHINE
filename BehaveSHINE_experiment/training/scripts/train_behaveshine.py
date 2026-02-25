@@ -525,7 +525,8 @@ def main():
                 if global_step % cfg.training.quick_eval_every_n_steps == 0:
                     qe_loss = run_eval(
                         metanetwork, metalora, quick_eval_loader, device, tokenizer, logger,
-                        num_generations=0, eval_name="quick_eval",
+                        num_generations=cfg.training.get("quick_eval_num_generations", 0),
+                        eval_name="quick_eval",
                     )
                     logger.info(f"[Quick Eval] GStep {global_step}  Loss {qe_loss:.4f}")
                     writer.add_scalar("eval/quick_loss", qe_loss, global_step)
