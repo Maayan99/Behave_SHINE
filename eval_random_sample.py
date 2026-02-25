@@ -219,6 +219,13 @@ def init_vanilla_model(model_path, tokenizer, device):
 # Generation
 # ---------------------------------------------------------------------------
 
+# Add this helper at the top of the file
+def add_no_think_prefix(input_ids, tokenizer, device):
+    """Prepend <think>\n</think>\n to force model to skip thinking."""
+    prefix = tokenizer.encode("<think>\n</think>\n", add_special_tokens=False)
+    prefix_t = torch.tensor([prefix], device=device).expand(input_ids.shape[0], -1)
+    return torch.cat([input_ids, prefix_t], dim=1)
+
 @torch.no_grad()
 def run_baseline(vanilla_model, dataloader, tokenizer, device, max_new_tokens):
     pad_id = tokenizer.pad_token_id
@@ -227,6 +234,7 @@ def run_baseline(vanilla_model, dataloader, tokenizer, device, max_new_tokens):
 
     for batch in tqdm(dataloader, desc="Baseline"):
         prompt_only_ids = batch["prompt_only_ids"].to(device)
+        prompt_only_ids = add_no_think_prefix(prompt_only_ids, tokenizer, device)
         attention_mask = (prompt_only_ids != pad_id).long()
 
         outputs = vanilla_model.generate(
@@ -260,6 +268,7 @@ def run_shine(metanetwork, metalora_ckpt, dataloader, tokenizer, device, max_new
         evidence_mask = batch["evidence_attention_mask"].to(device, non_blocking=True)
 
         prompt_only_ids = batch["prompt_only_ids"].to(device)
+        prompt_only_ids = add_no_think_prefix(prompt_only_ids, tokenizer, device)
         prompt_mask = (prompt_only_ids != pad_id).long()
 
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
@@ -274,7 +283,6 @@ def run_shine(metanetwork, metalora_ckpt, dataloader, tokenizer, device, max_new
                 do_sample=False,
                 ignore_mem_token=True,
                 loradict=lora_dict,
-                enable_thinking=False
             )
 
         for i in range(outputs.shape[0]):
