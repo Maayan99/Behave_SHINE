@@ -28,7 +28,7 @@ try:
 
     # Your actual dataset/collator module path may differ:
     # e.g. from BehaveSHINE_experiment.training.utils.behaveshine_data import ...
-    from your_collator_file import BehaveSHINEDataset, BehaveSHINECollator
+    from training.scripts.dataset.py import BehaveSHINEDataset, BehaveSHINECollator
 except ImportError as e:
     print(f"Import error: {e}")
     sys.exit(1)
