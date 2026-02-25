@@ -1,5 +1,24 @@
 #!/usr/bin/env python3
 # coding: utf-8
+"""
+eval_random_sample.py — BehaveSHINE evaluation with multi-checkpoint comparison.
+
+Usage:
+  # Single checkpoint (backward-compatible):
+  python eval_random_sample.py --checkpoint path/to/ckpt --n 10 --seed 42 --scale 0.001
+
+  # Multiple checkpoints (side-by-side comparison):
+  python eval_random_sample.py \
+    --checkpoints step-500:./BehaveSHINE_experiment/v2/training/checkpoints/checkpoint-step-500 \
+                  step-1000:./BehaveSHINE_experiment/v2/training/checkpoints/checkpoint-step-1000 \
+                  step-1500:./BehaveSHINE_experiment/v2/training/checkpoints/checkpoint-step-1500 \
+    --n 10 --seed 42 --scale 0.001
+
+  Labels are optional — if omitted, the checkpoint directory name is used:
+  python eval_random_sample.py \
+    --checkpoints ./ckpts/checkpoint-step-500 ./ckpts/checkpoint-step-1000 \
+    --n 10 --seed 42 --scale 0.001
+"""
 
 import os
 import gc
@@ -9,8 +28,9 @@ import sys
 import argparse
 import random
 import logging
+from collections import OrderedDict
 from datetime import datetime
-from typing import Tuple, Optional
+from typing import Tuple, List, Dict, Any
 
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -25,9 +45,6 @@ try:
     from utils.mysaveload import load_checkpoint
     from utils.myfreeze import freeze
     from utils.myinit import _import_class
-
-    # Your actual dataset/collator module path may differ:
-    # e.g. from BehaveSHINE_experiment.training.utils.behaveshine_data import ...
     from BehaveSHINE_experiment.training.scripts.dataset import BehaveSHINEDataset, BehaveSHINECollator
 except ImportError as e:
     print(f"Import error: {e}")
@@ -39,11 +56,12 @@ torch.backends.cuda.matmul.allow_tf32 = True
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("eval_random_sample")
 
-# ---------------------------------------------------------------------------
-# Must match training dtype. Training used bfloat16, so eval must too.
-# ---------------------------------------------------------------------------
 EVAL_DTYPE = torch.bfloat16
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def extract_think_and_answer(text: str) -> Tuple[str, str]:
     think, answer = "", text
@@ -57,7 +75,6 @@ def extract_think_and_answer(text: str) -> Tuple[str, str]:
             think, answer = rest.strip(), ""
     else:
         answer = text.strip()
-
     answer = re.sub(r"^(final answer|answer)\s*:\s*", "", answer, flags=re.IGNORECASE).strip()
     return think, answer
 
@@ -74,6 +91,37 @@ def cast_lora_dict_dtype(obj, device, dtype):
     return obj
 
 
+def parse_checkpoint_arg(raw: str) -> Tuple[str, str]:
+    """Parse 'label:path' or just 'path' (label = directory basename)."""
+    if ":" in raw and not raw.startswith("/") and not raw.startswith("./"):
+        label, path = raw.split(":", 1)
+        return label.strip(), path.strip()
+    # Handle Windows-style or label:./path
+    if ":" in raw:
+        # Could be label:./path or just a path with :
+        parts = raw.split(":", 1)
+        if os.path.exists(parts[1].strip()) or parts[1].strip().startswith("./") or parts[1].strip().startswith("/"):
+            return parts[0].strip(), parts[1].strip()
+    # No label — derive from path
+    basename = os.path.basename(raw.rstrip("/"))
+    return basename, raw
+
+
+def make_dataloader(subset, collator, batch_size):
+    return DataLoader(
+        subset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collator,
+        num_workers=0,
+        pin_memory=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Init / load
+# ---------------------------------------------------------------------------
+
 def init_tokenizer(model_path: str):
     tok = AutoTokenizer.from_pretrained(model_path)
     if tok.pad_token_id is None:
@@ -81,12 +129,49 @@ def init_tokenizer(model_path: str):
     return tok
 
 
+def build_cfg(args):
+    conf_dict = {
+        "run": {"seed": args.seed, "device": "cuda"},
+        "paths": {"model_path": args.model_path},
+        "model": {
+            "lora_r": 8,
+            "metalora_r": 128,
+            "num_mem_token": 4,
+            "metamodel_class_path": "LoraQwen.LoraQwen3ForCausalLM",
+            "config_class_path": "LoraQwen.Qwen3Config",
+            "tokenizer_from": args.model_path,
+            "model_from": args.model_path,
+        },
+        "metanetwork": {
+            "type": "transformer",
+            "method": "rl",
+            "transformer_cfg": {
+                "encoder_cfg": {
+                    "d_model": 4096, "nhead": 32, "dim_feedforward": 8192,
+                    "dropout": 0, "activation": "gelu", "layer_norm_eps": 1e-5,
+                    "batch_first": True, "norm_first": False, "bias": True,
+                },
+                "couple_encoder_cfg": {
+                    "d_model": 4096, "nhead": 32, "dim_feedforward": 8192,
+                    "dropout": 0, "activation": "gelu", "layer_norm_eps": 1e-5,
+                    "batch_first": True, "norm_first": False, "bias": True,
+                },
+                "layer_transformer_first": True,
+                "mean_pool_size": 1,
+                "num_layers": 4,
+                "couple_num_layers": 0,
+                "scale": args.scale,
+            },
+        },
+    }
+    return OmegaConf.create(conf_dict)
+
+
 def init_metanetwork(cfg, tokenizer, device):
     MetaModelCls = _import_class(cfg.model.metamodel_class_path)
     ConfigCls = _import_class(cfg.model.config_class_path)
     config = ConfigCls.from_pretrained(cfg.model.model_from)
 
-    # Compute num_mem_token same as training
     config.num_mem_token = -1
     cfg.hidden_size = config.hidden_size
     cfg.num_layers = config.num_hidden_layers
@@ -100,7 +185,6 @@ def init_metanetwork(cfg, tokenizer, device):
     gc.collect()
     torch.cuda.empty_cache()
 
-    # --- FIX: load in bfloat16 to match training ---
     metamodel = MetaModelCls.from_pretrained(
         cfg.model.model_from, config=config, torch_dtype=EVAL_DTYPE
     )
@@ -117,20 +201,23 @@ def load_ckpt(metanetwork, ckpt_path, device):
     logger.info(f"Loading checkpoint: {ckpt_path}")
     metanetwork, metalora_ckpt, _ = load_checkpoint(metanetwork, ckpt_path, device)
     metanetwork = metanetwork.to(device=device, dtype=EVAL_DTYPE)
-    metanetwork.metanetwork.float()  # encoder stays float32
-    metalora_ckpt = cast_lora_dict_dtype(metalora_ckpt, device=device, dtype=torch.float32)  # metalora also float32
+    metanetwork.metanetwork.float()
+    metalora_ckpt = cast_lora_dict_dtype(metalora_ckpt, device=device, dtype=torch.float32)
     return metanetwork, metalora_ckpt
 
 
 def init_vanilla_model(model_path, tokenizer, device):
     logger.info("Loading vanilla baseline model...")
-    # --- FIX: load baseline in bfloat16 too for fair comparison ---
     model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=EVAL_DTYPE)
     model.resize_token_embeddings(len(tokenizer))
     model.to(device)
     model.eval()
     return model
 
+
+# ---------------------------------------------------------------------------
+# Generation
+# ---------------------------------------------------------------------------
 
 @torch.no_grad()
 def run_baseline(vanilla_model, dataloader, tokenizer, device, max_new_tokens):
@@ -176,7 +263,7 @@ def run_shine(metanetwork, metalora_ckpt, dataloader, tokenizer, device, max_new
         prompt_mask = (prompt_only_ids != pad_id).long()
 
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-            lora_dict = metanetwork.generate_lora_dict(evidence_ids, evidence_mask, metalora_ckpt)        # --- FIX: keep bfloat16, not float32 ---
+            lora_dict = metanetwork.generate_lora_dict(evidence_ids, evidence_mask, metalora_ckpt)
 
             outputs = metanetwork.metamodel.generate(
                 input_ids=prompt_only_ids,
@@ -199,17 +286,21 @@ def run_shine(metanetwork, metalora_ckpt, dataloader, tokenizer, device, max_new
     return results
 
 
-def save_outputs(samples, baseline_results, shine_results, args):
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+def save_outputs(samples, baseline_results, shine_results_by_label, args, checkpoint_labels):
     out_dir = "./BehaveSHINE_experiment/eval_outputs"
     os.makedirs(out_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    json_path = os.path.join(out_dir, f"eval_random_sample_{ts}.json")
-    txt_path = os.path.join(out_dir, f"eval_random_sample_{ts}.txt")
+    json_path = os.path.join(out_dir, f"eval_compare_{ts}.json")
+    txt_path = os.path.join(out_dir, f"eval_compare_{ts}.txt")
 
     rows = []
-    for ex, b, s in zip(samples, baseline_results, shine_results):
-        rows.append({
+    for idx, ex in enumerate(samples):
+        row = {
             "question_id": ex.get("question_id"),
             "system_prompt_id": ex.get("system_prompt_id"),
             "category": ex.get("category"),
@@ -219,14 +310,16 @@ def save_outputs(samples, baseline_results, shine_results, args):
             "question": ex["question"],
             "teacher_answer": ex["answer"],
             "answer_8b": ex.get("answer_8b", ""),
-            "baseline": b,
-            "shine": s,
-        })
+            "baseline": baseline_results[idx],
+        }
+        for label in checkpoint_labels:
+            row[f"shine_{label}"] = shine_results_by_label[label][idx]
+        rows.append(row)
 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump({
             "metadata": {
-                "checkpoint": args.checkpoint,
+                "checkpoints": {label: path for label, path in zip(checkpoint_labels, [v for v in shine_results_by_label.keys()])},
                 "dataset": args.dataset,
                 "n": args.n,
                 "seed": args.seed,
@@ -239,27 +332,76 @@ def save_outputs(samples, baseline_results, shine_results, args):
             "results": rows
         }, f, ensure_ascii=False, indent=2)
 
+    # Human-readable text output
+    sep = "=" * 100
+    thin_sep = "-" * 80
+
     with open(txt_path, "w", encoding="utf-8") as f:
+        f.write(f"BehaveSHINE Multi-Checkpoint Comparison\n")
+        f.write(f"Generated: {ts}\n")
+        f.write(f"Scale: {args.scale}  Seed: {args.seed}  N: {args.n}\n")
+        f.write(f"Checkpoints: {', '.join(checkpoint_labels)}\n")
+        f.write(sep + "\n\n")
+
         for i, row in enumerate(rows, 1):
-            f.write("=" * 100 + "\n")
-            f.write(f"[Sample {i}] qid={row.get('question_id')} category={row.get('category')}\n")
-            f.write(f"Question: {row['question']}\n\n")
-            f.write("[Teacher]\n")
-            f.write(row["teacher_answer"] + "\n\n")
-            f.write("[Baseline]\n")
-            f.write(row["baseline"]["answer"] + "\n\n")
-            f.write("[SHINE]\n")
-            f.write(row["shine"]["answer"] + "\n\n")
+            f.write(sep + "\n")
+            f.write(f"[Sample {i}]  qid={row.get('question_id')}  "
+                    f"category={row.get('category')}  "
+                    f"type={row.get('question_type')}  "
+                    f"difficulty={row.get('difficulty_weight')}\n")
+            f.write(thin_sep + "\n")
+            f.write(f"QUESTION:\n{row['question']}\n\n")
+
+            f.write(f"TEACHER (32B):\n{row['teacher_answer']}\n\n")
+            f.write(thin_sep + "\n")
+            f.write(f"BASELINE (8B, no LoRA):\n{row['baseline']['answer']}\n\n")
+
+            for label in checkpoint_labels:
+                f.write(thin_sep + "\n")
+                f.write(f"SHINE [{label}]:\n{row[f'shine_{label}']['answer']}\n\n")
+
+            f.write("\n")
 
     logger.info(f"Saved JSON: {json_path}")
     logger.info(f"Saved TXT:  {txt_path}")
 
+    # Also print to stdout
+    print(f"\n{'=' * 100}")
+    print(f"  COMPARISON SUMMARY  (scale={args.scale}, seed={args.seed}, n={len(rows)})")
+    print(f"{'=' * 100}\n")
+
+    for i, row in enumerate(rows, 1):
+        print(f"\n{'=' * 80}")
+        print(f"[Sample {i}]  {row.get('question_id', '')}  |  {row.get('category', '')}  |  difficulty={row.get('difficulty_weight', '')}")
+        print(f"Q: {row['question'][:200]}{'...' if len(row['question']) > 200 else ''}\n")
+
+        print(f"  TEACHER (32B):")
+        print(f"    {row['teacher_answer'][:300]}{'...' if len(row['teacher_answer']) > 300 else ''}\n")
+
+        print(f"  BASELINE (8B):")
+        print(f"    {row['baseline']['answer'][:300]}{'...' if len(row['baseline']['answer']) > 300 else ''}\n")
+
+        for label in checkpoint_labels:
+            ans = row[f"shine_{label}"]["answer"]
+            print(f"  SHINE [{label}]:")
+            print(f"    {ans[:300]}{'...' if len(ans) > 300 else ''}\n")
+
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True)
+    parser = argparse.ArgumentParser(
+        description="BehaveSHINE eval with multi-checkpoint comparison",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+
+    # Support both single --checkpoint and multi --checkpoints
+    parser.add_argument("--checkpoint", default=None,
+                        help="Single checkpoint path (backward-compatible)")
+    parser.add_argument("--checkpoints", nargs="+", default=None,
+                        help="Multiple checkpoints as 'label:path' or just 'path'")
+
     parser.add_argument("--dataset", default="./BehaveSHINE_experiment/v2/data/splits/test.jsonl")
-    parser.add_argument("--n", type=int, default=2)
+    parser.add_argument("--n", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
 
     parser.add_argument("--model_path", default="./models/Qwen3-8B")
@@ -269,67 +411,51 @@ def main():
     parser.add_argument("--context_max_length", type=int, default=1550)
     parser.add_argument("--conversation_max_length", type=int, default=2800)
 
-    # training-consistent scale
-    parser.add_argument("--scale", type=float, default=0.008)
+    parser.add_argument("--scale", type=float, default=0.001)
+
+    parser.add_argument("--no_baseline", action="store_true",
+                        help="Skip baseline generation (saves time if you only care about SHINE)")
 
     args = parser.parse_args()
+
+    # Resolve checkpoint list
+    ckpt_list: List[Tuple[str, str]] = []  # (label, path)
+    if args.checkpoints:
+        for raw in args.checkpoints:
+            label, path = parse_checkpoint_arg(raw)
+            ckpt_list.append((label, path))
+    elif args.checkpoint:
+        label, path = parse_checkpoint_arg(args.checkpoint)
+        ckpt_list.append((label, path))
+    else:
+        parser.error("Provide --checkpoint or --checkpoints")
+
+    # Validate all paths exist
+    for label, path in ckpt_list:
+        if not os.path.exists(path):
+            parser.error(f"Checkpoint not found: {path} (label={label})")
 
     device = torch.device("cuda")
     set_seed(args.seed)
 
     logger.info(f"Eval dtype: {EVAL_DTYPE}")
-    logger.info(f"Using metanetwork scale from training config: {args.scale}")
+    logger.info(f"Scale: {args.scale}")
+    logger.info(f"Checkpoints ({len(ckpt_list)}):")
+    for label, path in ckpt_list:
+        logger.info(f"  [{label}] → {path}")
 
     tokenizer = init_tokenizer(args.model_path)
+    cfg = build_cfg(args)
 
-    # Build cfg matching training
-    conf_dict = {
-        "run": {"seed": args.seed, "device": "cuda"},
-        "paths": {"model_path": args.model_path},
-        "model": {
-            "lora_r": 8,
-            "metalora_r": 128,
-            "num_mem_token": 4,
-            "metamodel_class_path": "LoraQwen.LoraQwen3ForCausalLM",
-            "config_class_path": "LoraQwen.Qwen3Config",
-            "tokenizer_from": args.model_path,
-            "model_from": args.model_path,
-        },
-        "metanetwork": {
-            "type": "transformer",
-            "method": "rl",
-            "transformer_cfg": {
-                "encoder_cfg": {
-                    "d_model": 4096, "nhead": 32, "dim_feedforward": 8192,
-                    "dropout": 0, "activation": "gelu", "layer_norm_eps": 1e-5,
-                    "batch_first": True, "norm_first": False, "bias": True,
-                },
-                "couple_encoder_cfg": {
-                    "d_model": 4096, "nhead": 32, "dim_feedforward": 8192,
-                    "dropout": 0, "activation": "gelu", "layer_norm_eps": 1e-5,
-                    "batch_first": True, "norm_first": False, "bias": True,
-                },
-                "layer_transformer_first": True,
-                "mean_pool_size": 1,
-                "num_layers": 4,
-                "couple_num_layers": 0,
-                "scale": args.scale,  # <-- important
-            },
-        },
-    }
-    cfg = OmegaConf.create(conf_dict)
-
-    # Load dataset raw for sampling metadata + collator pipeline
+    # Load dataset & sample
     dataset = BehaveSHINEDataset(args.dataset)
     total = len(dataset)
     n = min(args.n, total)
 
     rng = random.Random(args.seed)
     sampled_indices = rng.sample(list(range(total)), n)
-    logger.info(f"Sampled indices: {sampled_indices}")
+    logger.info(f"Sampled {n} examples, indices: {sampled_indices}")
     subset = Subset(dataset, sampled_indices)
-
-    # For saving metadata we also want raw rows
     raw_rows = [dataset.data[i] for i in sampled_indices]
 
     collator = BehaveSHINECollator(
@@ -337,49 +463,51 @@ def main():
         context_max_length=args.context_max_length,
         conversation_max_length=args.conversation_max_length,
     )
-    loader = DataLoader(
-        subset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=collator,
-        num_workers=0,
-        pin_memory=True,
-    )
 
-    # SHINE
+    # ---- Baseline ----
+    if not args.no_baseline:
+        vanilla = init_vanilla_model(args.model_path, tokenizer, device)
+        loader = make_dataloader(subset, collator, args.batch_size)
+        baseline_results = run_baseline(vanilla, loader, tokenizer, device, args.max_new_tokens)
+        del vanilla
+        gc.collect()
+        torch.cuda.empty_cache()
+        logger.info("Baseline complete.")
+    else:
+        baseline_results = [{"think": "", "answer": "(skipped)"} for _ in range(n)]
+        logger.info("Baseline skipped (--no_baseline).")
+
+    # ---- SHINE for each checkpoint ----
+    # Build metanetwork once, reload weights for each checkpoint
     metanetwork = init_metanetwork(cfg, tokenizer, device)
-    metanetwork, metalora_ckpt = load_ckpt(metanetwork, args.checkpoint, device)
 
-    # Baseline
-    vanilla = init_vanilla_model(args.model_path, tokenizer, device)
-    baseline_results = run_baseline(vanilla, loader, tokenizer, device, args.max_new_tokens)
+    shine_results_by_label: OrderedDict[str, List[Dict[str, Any]]] = OrderedDict()
+    checkpoint_labels = []
 
-    del vanilla
-    gc.collect()
-    torch.cuda.empty_cache()
+    for ckpt_idx, (label, path) in enumerate(ckpt_list):
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Checkpoint {ckpt_idx+1}/{len(ckpt_list)}: [{label}]")
+        logger.info(f"{'='*60}")
 
-    # Rebuild loader because iterators are exhausted
-    loader = DataLoader(
-        subset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=collator,
-        num_workers=0,
-        pin_memory=True,
-    )
+        metanetwork, metalora_ckpt = load_ckpt(metanetwork, path, device)
 
-    shine_results = run_shine(metanetwork, metalora_ckpt, loader, tokenizer, device, args.max_new_tokens)
+        loader = make_dataloader(subset, collator, args.batch_size)
+        results = run_shine(metanetwork, metalora_ckpt, loader, tokenizer, device, args.max_new_tokens)
 
-    # Print quick view
-    for i, (ex, b, s) in enumerate(zip(raw_rows, baseline_results, shine_results), 1):
-        print("\n" + "=" * 80)
-        print(f"[Sample {i}] {ex.get('question_id', '')}")
-        print(f"Q: {ex['question']}\n")
-        print(f"TEACHER:\n{ex['answer']}\n")
-        print(f"BASELINE:\n{b['answer']}\n")
-        print(f"SHINE:\n{s['answer']}\n")
+        shine_results_by_label[label] = results
+        checkpoint_labels.append(label)
 
-    save_outputs(raw_rows, baseline_results, shine_results, args)
+        # Free metalora between checkpoints
+        del metalora_ckpt
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        logger.info(f"[{label}] complete — {len(results)} samples generated.")
+
+    # ---- Save & print ----
+    save_outputs(raw_rows, baseline_results, shine_results_by_label, args, checkpoint_labels)
+
+    logger.info("Done.")
 
 
 if __name__ == "__main__":
