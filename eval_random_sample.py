@@ -178,16 +178,16 @@ def run_shine(metanetwork, metalora_ckpt, dataloader, tokenizer, device, max_new
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
             lora_dict = metanetwork.generate_lora_dict(evidence_ids, evidence_mask, metalora_ckpt)        # --- FIX: keep bfloat16, not float32 ---
 
-        outputs = metanetwork.metamodel.generate(
-            input_ids=prompt_only_ids,
-            attention_mask=prompt_mask,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=pad_id,
-            eos_token_id=eos_id,
-            do_sample=False,
-            ignore_mem_token=True,
-            loradict=lora_dict,
-        )
+            outputs = metanetwork.metamodel.generate(
+                input_ids=prompt_only_ids,
+                attention_mask=prompt_mask,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=pad_id,
+                eos_token_id=eos_id,
+                do_sample=False,
+                ignore_mem_token=True,
+                loradict=lora_dict,
+            )
 
         for i in range(outputs.shape[0]):
             in_len = int(prompt_mask[i].sum().item())
