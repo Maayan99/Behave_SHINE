@@ -50,7 +50,7 @@ metanetwork:
     mean_pool_size: 1
     num_layers: 4
     couple_num_layers: 0
-    scale: 0.008
+    scale: 0.005
 
 data:
   context_max_length: 1550
@@ -61,7 +61,7 @@ data:
 
 training:
   num_epochs: 3
-  learning_rate: 7.0e-5
+  learning_rate: 6.0e-5
   warmup_steps: 220
   weight_decay: 0.01
   max_grad_norm: 1.0
