@@ -3,21 +3,29 @@
 """
 eval_random_sample.py — BehaveSHINE evaluation with multi-checkpoint comparison.
 
-Usage:
-  # Single checkpoint (backward-compatible):
-  python eval_random_sample.py --checkpoint path/to/ckpt --n 10 --seed 42 --scale 0.001
+Modes:
+  1. Random sample from test set (default):
+     python eval_random_sample.py \\
+       --checkpoints step-1000:./ckpts/checkpoint-step-1000 \\
+       --n 10 --seed 42 --scale 0.001
 
-  # Multiple checkpoints (side-by-side comparison):
-  python eval_random_sample.py \
-    --checkpoints step-500:./BehaveSHINE_experiment/v2/training/checkpoints/checkpoint-step-500 \
-                  step-1000:./BehaveSHINE_experiment/v2/training/checkpoints/checkpoint-step-1000 \
-                  step-1500:./BehaveSHINE_experiment/v2/training/checkpoints/checkpoint-step-1500 \
-    --n 10 --seed 42 --scale 0.001
+  2. Adversarial stress-test (--adversarial):
+     python eval_random_sample.py \\
+       --checkpoints step-1000:./ckpts/checkpoint-step-1000 \\
+       --adversarial adversarial_test_cases.json \\
+       --scale 0.001
 
-  Labels are optional — if omitted, the checkpoint directory name is used:
-  python eval_random_sample.py \
-    --checkpoints ./ckpts/checkpoint-step-500 ./ckpts/checkpoint-step-1000 \
-    --n 10 --seed 42 --scale 0.001
+     Runs ALL cases in the adversarial file (ignores --n and --seed for sampling).
+     The adversarial JSON is a list of objects with at minimum:
+       { "system_prompt_id", "category", "question_type", "difficulty_weight",
+         "context", "question" }
+     "notes" field is preserved in output for human review but not fed to models.
+
+  3. Specific indices from test set (--indices):
+     python eval_random_sample.py \\
+       --checkpoints step-1000:./ckpts/checkpoint-step-1000 \\
+       --indices 0 5 12 99 \\
+       --scale 0.001
 """
 
 import os
@@ -33,7 +41,7 @@ from datetime import datetime
 from typing import Tuple, List, Dict, Any
 
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from omegaconf import OmegaConf
 from tqdm.auto import tqdm
@@ -57,6 +65,44 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("eval_random_sample")
 
 EVAL_DTYPE = torch.bfloat16
+
+
+# ---------------------------------------------------------------------------
+# Adversarial dataset wrapper
+# ---------------------------------------------------------------------------
+
+class AdversarialDataset(Dataset):
+    """Wraps a list of adversarial test cases to look like BehaveSHINEDataset."""
+
+    def __init__(self, json_path: str):
+        with open(json_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+
+        self.data = []
+        for i, item in enumerate(raw):
+            row = {
+                "context": item["context"],
+                "question": item["question"],
+                # No teacher answer — we're generating all responses
+                "answer": item.get("teacher_answer", "(adversarial — no teacher answer)"),
+                "answer_8b": item.get("answer_8b", ""),
+                "question_id": item.get("question_id", f"adv_{i+1:03d}"),
+                "system_prompt_id": item.get("system_prompt_id", f"sp_ADV{i+1:02d}"),
+                "category": item.get("category", "adversarial"),
+                "question_type": item.get("question_type", "on_topic"),
+                "difficulty_weight": item.get("difficulty_weight", 3.0),
+                # Preserve notes for output
+                "_notes": item.get("notes", ""),
+            }
+            self.data.append(row)
+
+        logger.info(f"Loaded {len(self.data)} adversarial test cases from {json_path}")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
 
 
 # ---------------------------------------------------------------------------
@@ -96,20 +142,17 @@ def parse_checkpoint_arg(raw: str) -> Tuple[str, str]:
     if ":" in raw and not raw.startswith("/") and not raw.startswith("./"):
         label, path = raw.split(":", 1)
         return label.strip(), path.strip()
-    # Handle Windows-style or label:./path
     if ":" in raw:
-        # Could be label:./path or just a path with :
         parts = raw.split(":", 1)
         if os.path.exists(parts[1].strip()) or parts[1].strip().startswith("./") or parts[1].strip().startswith("/"):
             return parts[0].strip(), parts[1].strip()
-    # No label — derive from path
     basename = os.path.basename(raw.rstrip("/"))
     return basename, raw
 
 
-def make_dataloader(subset, collator, batch_size):
+def make_dataloader(subset_or_dataset, collator, batch_size):
     return DataLoader(
-        subset,
+        subset_or_dataset,
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collator,
@@ -219,12 +262,12 @@ def init_vanilla_model(model_path, tokenizer, device):
 # Generation
 # ---------------------------------------------------------------------------
 
-# Add this helper at the top of the file
 def add_no_think_prefix(input_ids, tokenizer, device):
     """Prepend <think>\n</think>\n to force model to skip thinking."""
     prefix = tokenizer.encode("<think>\n</think>\n", add_special_tokens=False)
     prefix_t = torch.tensor([prefix], device=device).expand(input_ids.shape[0], -1)
     return torch.cat([input_ids, prefix_t], dim=1)
+
 
 @torch.no_grad()
 def run_baseline(vanilla_model, dataloader, tokenizer, device, max_new_tokens):
@@ -299,13 +342,14 @@ def run_shine(metanetwork, metalora_ckpt, dataloader, tokenizer, device, max_new
 # Output
 # ---------------------------------------------------------------------------
 
-def save_outputs(samples, baseline_results, shine_results_by_label, args, checkpoint_labels):
+def save_outputs(samples, baseline_results, shine_results_by_label, args, checkpoint_labels, is_adversarial=False):
     out_dir = "./BehaveSHINE_experiment/eval_outputs"
     os.makedirs(out_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    json_path = os.path.join(out_dir, f"eval_compare_{ts}.json")
-    txt_path = os.path.join(out_dir, f"eval_compare_{ts}.txt")
+    prefix = "eval_adversarial" if is_adversarial else "eval_compare"
+    json_path = os.path.join(out_dir, f"{prefix}_{ts}.json")
+    txt_path = os.path.join(out_dir, f"{prefix}_{ts}.txt")
 
     rows = []
     for idx, ex in enumerate(samples):
@@ -317,38 +361,42 @@ def save_outputs(samples, baseline_results, shine_results_by_label, args, checkp
             "difficulty_weight": ex.get("difficulty_weight"),
             "context": ex["context"],
             "question": ex["question"],
-            "teacher_answer": ex["answer"],
+            "teacher_answer": ex.get("answer", ""),
             "answer_8b": ex.get("answer_8b", ""),
             "baseline": baseline_results[idx],
         }
+        # Include notes for adversarial cases
+        if ex.get("_notes"):
+            row["_notes"] = ex["_notes"]
         for label in checkpoint_labels:
             row[f"shine_{label}"] = shine_results_by_label[label][idx]
         rows.append(row)
 
+    meta = {
+        "mode": "adversarial" if is_adversarial else "random_sample",
+        "checkpoints": {label: label for label in checkpoint_labels},
+        "n": len(rows),
+        "seed": args.seed,
+        "max_new_tokens": args.max_new_tokens,
+        "context_max_length": args.context_max_length,
+        "conversation_max_length": args.conversation_max_length,
+        "metanet_scale": args.scale,
+        "eval_dtype": str(EVAL_DTYPE),
+    }
+    if not is_adversarial:
+        meta["dataset"] = args.dataset
+
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "metadata": {
-                "checkpoints": {label: path for label, path in zip(checkpoint_labels, [v for v in shine_results_by_label.keys()])},
-                "dataset": args.dataset,
-                "n": args.n,
-                "seed": args.seed,
-                "max_new_tokens": args.max_new_tokens,
-                "context_max_length": args.context_max_length,
-                "conversation_max_length": args.conversation_max_length,
-                "metanet_scale": args.scale,
-                "eval_dtype": str(EVAL_DTYPE),
-            },
-            "results": rows
-        }, f, ensure_ascii=False, indent=2)
+        json.dump({"metadata": meta, "results": rows}, f, ensure_ascii=False, indent=2)
 
     # Human-readable text output
     sep = "=" * 100
     thin_sep = "-" * 80
 
     with open(txt_path, "w", encoding="utf-8") as f:
-        f.write(f"BehaveSHINE Multi-Checkpoint Comparison\n")
+        f.write(f"BehaveSHINE {'Adversarial Stress Test' if is_adversarial else 'Multi-Checkpoint Comparison'}\n")
         f.write(f"Generated: {ts}\n")
-        f.write(f"Scale: {args.scale}  Seed: {args.seed}  N: {args.n}\n")
+        f.write(f"Scale: {args.scale}  Seed: {args.seed}  N: {len(rows)}\n")
         f.write(f"Checkpoints: {', '.join(checkpoint_labels)}\n")
         f.write(sep + "\n\n")
 
@@ -358,10 +406,18 @@ def save_outputs(samples, baseline_results, shine_results_by_label, args, checkp
                     f"category={row.get('category')}  "
                     f"type={row.get('question_type')}  "
                     f"difficulty={row.get('difficulty_weight')}\n")
+
+            # Show notes for adversarial cases
+            if row.get("_notes"):
+                f.write(f"\n>>> EXPECTED FAILURE MODES:\n{row['_notes']}\n")
+
             f.write(thin_sep + "\n")
+            f.write(f"CONTEXT:\n{row['context'][:500]}{'...' if len(row['context']) > 500 else ''}\n\n")
             f.write(f"QUESTION:\n{row['question']}\n\n")
 
-            f.write(f"TEACHER (32B):\n{row['teacher_answer']}\n\n")
+            if row.get("teacher_answer") and row["teacher_answer"] != "(adversarial — no teacher answer)":
+                f.write(f"TEACHER (32B):\n{row['teacher_answer']}\n\n")
+
             f.write(thin_sep + "\n")
             f.write(f"BASELINE (8B, no LoRA):\n{row['baseline']['answer']}\n\n")
 
@@ -374,45 +430,59 @@ def save_outputs(samples, baseline_results, shine_results_by_label, args, checkp
     logger.info(f"Saved JSON: {json_path}")
     logger.info(f"Saved TXT:  {txt_path}")
 
-    # Also print to stdout
+    # Print to stdout
     print(f"\n{'=' * 100}")
-    print(f"  COMPARISON SUMMARY  (scale={args.scale}, seed={args.seed}, n={len(rows)})")
+    title = "ADVERSARIAL STRESS TEST" if is_adversarial else "COMPARISON SUMMARY"
+    print(f"  {title}  (scale={args.scale}, n={len(rows)})")
     print(f"{'=' * 100}\n")
 
     for i, row in enumerate(rows, 1):
         print(f"\n{'=' * 80}")
-        print(f"[Sample {i}]  {row.get('question_id', '')}  |  {row.get('category', '')}  |  difficulty={row.get('difficulty_weight', '')}")
-        print(f"Q: {row['question'][:200]}{'...' if len(row['question']) > 200 else ''}\n")
+        print(f"[{i}/{len(rows)}]  {row.get('question_id', '')}  |  {row.get('category', '')}  |  diff={row.get('difficulty_weight', '')}")
 
-        print(f"  TEACHER (32B):")
-        print(f"    {row['teacher_answer'][:300]}{'...' if len(row['teacher_answer']) > 300 else ''}\n")
+        if row.get("_notes"):
+            print(f"  >>> EXPECTED: {row['_notes'][:200]}{'...' if len(row.get('_notes','')) > 200 else ''}")
+
+        print(f"  Q: {row['question'][:200]}{'...' if len(row['question']) > 200 else ''}\n")
 
         print(f"  BASELINE (8B):")
-        print(f"    {row['baseline']['answer'][:300]}{'...' if len(row['baseline']['answer']) > 300 else ''}\n")
+        print(f"    {row['baseline']['answer'][:400]}{'...' if len(row['baseline']['answer']) > 400 else ''}\n")
 
         for label in checkpoint_labels:
             ans = row[f"shine_{label}"]["answer"]
             print(f"  SHINE [{label}]:")
-            print(f"    {ans[:300]}{'...' if len(ans) > 300 else ''}\n")
+            print(f"    {ans[:400]}{'...' if len(ans) > 400 else ''}\n")
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="BehaveSHINE eval with multi-checkpoint comparison",
+        description="BehaveSHINE eval with multi-checkpoint comparison and adversarial mode",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
 
-    # Support both single --checkpoint and multi --checkpoints
+    # Checkpoint args
     parser.add_argument("--checkpoint", default=None,
                         help="Single checkpoint path (backward-compatible)")
     parser.add_argument("--checkpoints", nargs="+", default=None,
                         help="Multiple checkpoints as 'label:path' or just 'path'")
 
+    # Mode selection
+    parser.add_argument("--adversarial", default=None, metavar="JSON_PATH",
+                        help="Path to adversarial test cases JSON. Runs ALL cases in the file.")
+    parser.add_argument("--indices", nargs="+", type=int, default=None,
+                        help="Specific indices to evaluate from the dataset (instead of random)")
+
+    # Dataset / sampling
     parser.add_argument("--dataset", default="./BehaveSHINE_experiment/v2/data/splits/test.jsonl")
     parser.add_argument("--n", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
 
+    # Model / generation
     parser.add_argument("--model_path", default="./models/Qwen3-8B")
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=500)
@@ -423,12 +493,12 @@ def main():
     parser.add_argument("--scale", type=float, default=0.001)
 
     parser.add_argument("--no_baseline", action="store_true",
-                        help="Skip baseline generation (saves time if you only care about SHINE)")
+                        help="Skip baseline generation")
 
     args = parser.parse_args()
 
-    # Resolve checkpoint list
-    ckpt_list: List[Tuple[str, str]] = []  # (label, path)
+    # ---- Resolve checkpoints ----
+    ckpt_list: List[Tuple[str, str]] = []
     if args.checkpoints:
         for raw in args.checkpoints:
             label, path = parse_checkpoint_arg(raw)
@@ -439,7 +509,6 @@ def main():
     else:
         parser.error("Provide --checkpoint or --checkpoints")
 
-    # Validate all paths exist
     for label, path in ckpt_list:
         if not os.path.exists(path):
             parser.error(f"Checkpoint not found: {path} (label={label})")
@@ -447,25 +516,51 @@ def main():
     device = torch.device("cuda")
     set_seed(args.seed)
 
+    is_adversarial = args.adversarial is not None
+
     logger.info(f"Eval dtype: {EVAL_DTYPE}")
     logger.info(f"Scale: {args.scale}")
+    logger.info(f"Mode: {'ADVERSARIAL' if is_adversarial else 'indices' if args.indices else 'random sample'}")
     logger.info(f"Checkpoints ({len(ckpt_list)}):")
     for label, path in ckpt_list:
-        logger.info(f"  [{label}] → {path}")
+        logger.info(f"  [{label}] -> {path}")
 
     tokenizer = init_tokenizer(args.model_path)
     cfg = build_cfg(args)
 
-    # Load dataset & sample
-    dataset = BehaveSHINEDataset(args.dataset)
-    total = len(dataset)
-    n = min(args.n, total)
+    # ---- Load data ----
+    if is_adversarial:
+        # Adversarial mode: load custom test cases
+        if not os.path.exists(args.adversarial):
+            parser.error(f"Adversarial file not found: {args.adversarial}")
 
-    rng = random.Random(args.seed)
-    sampled_indices = rng.sample(list(range(total)), n)
-    logger.info(f"Sampled {n} examples, indices: {sampled_indices}")
-    subset = Subset(dataset, sampled_indices)
-    raw_rows = [dataset.data[i] for i in sampled_indices]
+        adv_dataset = AdversarialDataset(args.adversarial)
+        raw_rows = adv_dataset.data
+        eval_dataset = adv_dataset
+        n = len(adv_dataset)
+        logger.info(f"Adversarial mode: {n} test cases loaded")
+
+    elif args.indices:
+        # Specific indices mode
+        dataset = BehaveSHINEDataset(args.dataset)
+        for idx in args.indices:
+            if idx >= len(dataset):
+                parser.error(f"Index {idx} out of range (dataset has {len(dataset)} items)")
+        eval_dataset = Subset(dataset, args.indices)
+        raw_rows = [dataset.data[i] for i in args.indices]
+        n = len(args.indices)
+        logger.info(f"Index mode: {n} specific examples")
+
+    else:
+        # Random sample mode (default)
+        dataset = BehaveSHINEDataset(args.dataset)
+        total = len(dataset)
+        n = min(args.n, total)
+        rng = random.Random(args.seed)
+        sampled_indices = rng.sample(list(range(total)), n)
+        logger.info(f"Sampled {n} examples, indices: {sampled_indices}")
+        eval_dataset = Subset(dataset, sampled_indices)
+        raw_rows = [dataset.data[i] for i in sampled_indices]
 
     collator = BehaveSHINECollator(
         tokenizer=tokenizer,
@@ -476,7 +571,7 @@ def main():
     # ---- Baseline ----
     if not args.no_baseline:
         vanilla = init_vanilla_model(args.model_path, tokenizer, device)
-        loader = make_dataloader(subset, collator, args.batch_size)
+        loader = make_dataloader(eval_dataset, collator, args.batch_size)
         baseline_results = run_baseline(vanilla, loader, tokenizer, device, args.max_new_tokens)
         del vanilla
         gc.collect()
@@ -487,7 +582,6 @@ def main():
         logger.info("Baseline skipped (--no_baseline).")
 
     # ---- SHINE for each checkpoint ----
-    # Build metanetwork once, reload weights for each checkpoint
     metanetwork = init_metanetwork(cfg, tokenizer, device)
 
     shine_results_by_label: OrderedDict[str, List[Dict[str, Any]]] = OrderedDict()
@@ -500,13 +594,12 @@ def main():
 
         metanetwork, metalora_ckpt = load_ckpt(metanetwork, path, device)
 
-        loader = make_dataloader(subset, collator, args.batch_size)
+        loader = make_dataloader(eval_dataset, collator, args.batch_size)
         results = run_shine(metanetwork, metalora_ckpt, loader, tokenizer, device, args.max_new_tokens)
 
         shine_results_by_label[label] = results
         checkpoint_labels.append(label)
 
-        # Free metalora between checkpoints
         del metalora_ckpt
         gc.collect()
         torch.cuda.empty_cache()
@@ -514,7 +607,7 @@ def main():
         logger.info(f"[{label}] complete — {len(results)} samples generated.")
 
     # ---- Save & print ----
-    save_outputs(raw_rows, baseline_results, shine_results_by_label, args, checkpoint_labels)
+    save_outputs(raw_rows, baseline_results, shine_results_by_label, args, checkpoint_labels, is_adversarial=is_adversarial)
 
     logger.info("Done.")
 
