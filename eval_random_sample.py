@@ -102,8 +102,13 @@ class AdversarialDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        return self.data[idx]
-
+        item = self.data[idx]
+        return {
+            "system_prompt": item["context"],
+            "question": item["question"],
+            "answer": item.get("answer", ""),
+            "difficulty_weight": item.get("difficulty_weight", 3.0),
+        }
 
 # ---------------------------------------------------------------------------
 # Helpers
