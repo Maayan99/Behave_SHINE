@@ -63,11 +63,11 @@ echo ""
 echo "[4/5] Downloading Qwen3-8B + SHINE checkpoint (concurrent)..."
 mkdir -p models ckpts
 
-huggingface-cli download Qwen/Qwen3-8B \
+hf download Qwen/Qwen3-8B \
     --local-dir models/Qwen3-8B &
 PID_MODEL=$!
 
-huggingface-cli download Nitai99/BehaveSHINE-v2-checkpoints \
+hf download Nitai99/BehaveSHINE-v2-checkpoints \
     --include "checkpoint-step-1250/*" \
     --local-dir ckpts &
 PID_CKPT=$!

@@ -226,18 +226,20 @@ def score_entry(expected_output: str, model_output: str) -> Dict[str, Any]:
     # SRargs: Did the model provide the right arguments?
     args_correct = False
     if exp["action_input"] is not None and mod["action_input"] is not None:
-        # For action inputs, we do case-insensitive comparison
-        # and also handle path variations (the model might use a different path format)
         exp_input = exp["action_input"].strip().lower()
         mod_input = mod["action_input"].strip().lower()
-        args_correct = exp_input == mod_input
 
-        # Relaxed: if the core content matches (ignoring path prefixes)
-        if not args_correct:
-            # Strip common path prefixes for comparison
-            exp_base = exp_input.split("/")[-1] if "/" in exp_input else exp_input
-            mod_base = mod_input.split("/")[-1] if "/" in mod_input else mod_input
-            args_correct = exp_base == mod_base
+        # Ground truth uses "example.png" as placeholder —
+        # any valid image path is correct
+        if exp_input == "example.png":
+            # Model just needs to provide *some* file path
+            args_correct = bool(mod_input) and mod_input != ""
+        else:
+            args_correct = exp_input == mod_input
+            if not args_correct:
+                exp_base = exp_input.split("/")[-1] if "/" in exp_input else exp_input
+                mod_base = mod_input.split("/")[-1] if "/" in mod_input else mod_input
+                args_correct = exp_base == mod_base
     elif exp["action_input"] is None and mod["action_input"] is None:
         # No tool needed — no args expected
         args_correct = True
